@@ -1,0 +1,8 @@
+---
+description: 所有代码生成、代码修改、脚本、配置生成或示例代码输出任务都必须加载；确保产出的代码包含中文注释，文件头部有中文说明，关键逻辑和关键结构体定义有中文说明。
+globs:
+alwaysApply: true
+---
+
+Use the Codeseed-managed skill at `.agent/skills/common/codeseed-chinese-code-comments/SKILL.md`.
+Follow its front matter and instructions when this task matches its description, triggers, or default behavior.

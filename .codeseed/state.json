@@ -3,6 +3,7 @@
   "agentDir": ".agent",
   "codeseedDir": ".codeseed",
   "installedSkills": [
+    { "id": "codeseed-chinese-code-comments", "source": "preset:codeseed-chinese-code-comments", "target": "common" },
     { "id": "codeseed-context-index", "source": "preset:codeseed-context-index", "target": "common" },
     { "id": "codeseed-skill-author", "source": "preset:codeseed-skill-author", "target": "common" }
   ]

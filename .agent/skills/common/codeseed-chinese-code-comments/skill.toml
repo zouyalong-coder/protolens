@@ -1,0 +1,10 @@
+schema = 1
+id = "codeseed-chinese-code-comments"
+name = "Codeseed Chinese Code Comments"
+version = "0.1.0"
+target = "common"
+entry = "SKILL.md"
+
+[source]
+type = "preset"
+package = "codeseed"
