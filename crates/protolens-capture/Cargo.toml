@@ -6,4 +6,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+pcap.workspace = true
 protolens-core.workspace = true

@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use protolens_capture::{PcapSourceConfig, list_interfaces};
+use protolens_capture::{CaptureInterface, PcapSourceConfig, list_interfaces};
 use protolens_core::Result;
 
 #[derive(Debug, Parser)]
@@ -28,10 +28,7 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Interfaces => {
             for interface in list_interfaces()? {
-                match interface.description {
-                    Some(description) => println!("{}\t{}", interface.name, description),
-                    None => println!("{}", interface.name),
-                }
+                print_interface(interface);
             }
         }
         Command::Capture { interface, filter } => {
@@ -48,4 +45,59 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_interface(interface: CaptureInterface) {
+    println!("{}", interface.name);
+
+    if let Some(description) = &interface.description {
+        println!("  description: {description}");
+    }
+
+    println!("  status: {}", interface.flags.connection_status);
+    println!("  flags: {}", interface_flags(&interface));
+
+    if interface.addresses.is_empty() {
+        println!("  addresses: none");
+    } else {
+        println!("  addresses:");
+        for address in interface.addresses {
+            println!("    - address: {}", address.address);
+
+            if let Some(netmask) = address.netmask {
+                println!("      netmask: {netmask}");
+            }
+
+            if let Some(broadcast_address) = address.broadcast_address {
+                println!("      broadcast: {broadcast_address}");
+            }
+
+            if let Some(destination_address) = address.destination_address {
+                println!("      destination: {destination_address}");
+            }
+        }
+    }
+}
+
+fn interface_flags(interface: &CaptureInterface) -> String {
+    let mut flags = Vec::new();
+
+    if interface.flags.is_up {
+        flags.push("up");
+    }
+    if interface.flags.is_running {
+        flags.push("running");
+    }
+    if interface.flags.is_loopback {
+        flags.push("loopback");
+    }
+    if interface.flags.is_wireless {
+        flags.push("wireless");
+    }
+
+    if flags.is_empty() {
+        "none".to_owned()
+    } else {
+        flags.join(", ")
+    }
 }
