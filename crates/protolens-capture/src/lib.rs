@@ -6,7 +6,7 @@
 use pcap::{Active, Capture, Linktype};
 use protolens_core::{
     CaptureEvent, CaptureEventKind, Endpoint, Error, FlowKey, PacketSource, Payload, Result,
-    TransportProtocol,
+    TcpSegmentMeta, TransportProtocol,
 };
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -162,12 +162,13 @@ impl PacketSource for PcapSource {
             let timestamp = packet_timestamp_millis(packet.header);
             let parsed = parse_tcp_packet(self.linktype, packet.data, self.payload_limit);
 
-            if let Some((flow, payload)) = parsed {
+            if let Some((flow, tcp, payload)) = parsed {
                 return Ok(Some(CaptureEvent {
                     timestamp,
                     source_id: self.id.clone(),
                     kind: CaptureEventKind::InterfacePacket {
                         flow: Some(flow),
+                        tcp: Some(tcp),
                         payload,
                     },
                 }));
@@ -222,7 +223,7 @@ fn parse_tcp_packet(
     linktype: Linktype,
     packet: &[u8],
     payload_limit: Option<usize>,
-) -> Option<(FlowKey, Option<Payload>)> {
+) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
     let ip_packet = match linktype {
         Linktype::ETHERNET => ethernet_payload(packet)?,
         Linktype::IPV4 | Linktype::IPV6 | Linktype::RAW => packet,
@@ -271,7 +272,7 @@ fn loopback_payload(packet: &[u8]) -> Option<&[u8]> {
 fn parse_ip_packet(
     packet: &[u8],
     payload_limit: Option<usize>,
-) -> Option<(FlowKey, Option<Payload>)> {
+) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
     match packet.first()? >> 4 {
         4 => parse_ipv4_tcp_packet(packet, payload_limit),
         6 => parse_ipv6_tcp_packet(packet, payload_limit),
@@ -283,7 +284,7 @@ fn parse_ip_packet(
 fn parse_ipv4_tcp_packet(
     packet: &[u8],
     payload_limit: Option<usize>,
-) -> Option<(FlowKey, Option<Payload>)> {
+) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
     if packet.len() < 20 {
         return None;
     }
@@ -319,7 +320,7 @@ fn parse_ipv4_tcp_packet(
 fn parse_ipv6_tcp_packet(
     packet: &[u8],
     payload_limit: Option<usize>,
-) -> Option<(FlowKey, Option<Payload>)> {
+) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
     if packet.len() < 40 || packet[6] != 6 {
         return None;
     }
@@ -342,7 +343,7 @@ fn parse_tcp_segment(
     source_address: IpAddr,
     destination_address: IpAddr,
     payload_limit: Option<usize>,
-) -> Option<(FlowKey, Option<Payload>)> {
+) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
     if segment.len() < 20 {
         return None;
     }
@@ -355,6 +356,7 @@ fn parse_tcp_segment(
     }
 
     let payload = &segment[header_len..];
+    let tcp = TcpSegmentMeta::from_flags_byte(segment[13]);
 
     Some((
         FlowKey {
@@ -368,6 +370,7 @@ fn parse_tcp_segment(
             },
             transport: TransportProtocol::Tcp,
         },
+        tcp,
         (!payload.is_empty()).then(|| Payload::from_bytes(payload, payload_limit)),
     ))
 }
@@ -400,10 +403,12 @@ mod tests {
             0x50, 0x18, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
         ];
 
-        let (flow, payload) = parse_ip_packet(&packet, None).unwrap();
+        let (flow, tcp, payload) = parse_ip_packet(&packet, None).unwrap();
 
         assert_eq!(flow.source.port, 12_345);
         assert_eq!(flow.destination.port, 80);
+        assert!(tcp.psh);
+        assert!(tcp.ack);
         assert_eq!(payload.unwrap().preview.as_deref(), Some("hello"));
     }
 

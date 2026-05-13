@@ -36,6 +36,37 @@ pub struct FlowKey {
     pub transport: TransportProtocol,
 }
 
+/// TCP segment 元信息。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TcpSegmentMeta {
+    /// FIN flag。
+    pub fin: bool,
+    /// SYN flag。
+    pub syn: bool,
+    /// RST flag。
+    pub rst: bool,
+    /// PSH flag。
+    pub psh: bool,
+    /// ACK flag。
+    pub ack: bool,
+    /// URG flag。
+    pub urg: bool,
+}
+
+impl TcpSegmentMeta {
+    /// 从 TCP header flags byte 创建元信息。
+    pub fn from_flags_byte(flags: u8) -> Self {
+        Self {
+            fin: flags & 0x01 != 0,
+            syn: flags & 0x02 != 0,
+            rst: flags & 0x04 != 0,
+            psh: flags & 0x08 != 0,
+            ack: flags & 0x10 != 0,
+            urg: flags & 0x20 != 0,
+        }
+    }
+}
+
 /// session 内部的字节方向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -144,6 +175,8 @@ pub enum CaptureEventKind {
     InterfacePacket {
         /// 能解析出传输层信息时携带 flow。
         flow: Option<FlowKey>,
+        /// TCP segment metadata；非 TCP packet 为空。
+        tcp: Option<TcpSegmentMeta>,
         /// packet 中的 TCP payload；纯 ACK 等无负载 packet 为空。
         payload: Option<Payload>,
     },

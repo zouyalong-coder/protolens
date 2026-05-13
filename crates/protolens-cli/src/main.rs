@@ -1,7 +1,11 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use protolens_capture::{CaptureInterface, PcapSource, PcapSourceConfig, list_interfaces};
-use protolens_core::{EventSink, PacketSource, Result};
-use protolens_output::FormattedEventSink;
+use protolens_core::{Error, EventSink, PacketSource, Result};
+use protolens_output::{FormattedEventSink, LinkEventSink};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// ProtoLens CLI 参数入口。
 #[derive(Debug, Parser)]
@@ -35,7 +39,26 @@ enum Command {
         /// 单个 packet payload 最多保留的原始字节数。
         #[arg(long, default_value_t = 4096)]
         payload_limit: usize,
+
+        /// 输出视图：events 为逐事件输出，links 为按 TCP 链路聚合输出。
+        #[arg(long, value_enum, default_value = "events")]
+        view: CaptureView,
+
+        /// 只输出匹配端点的 link；仅影响 --view links，可重复指定。
+        ///
+        /// 示例：--link-filter 10.0.0.2、--link-filter :443、--link-filter 10.0.0.2:443。
+        #[arg(long)]
+        link_filter: Vec<String>,
     },
+}
+
+/// capture 输出视图。
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CaptureView {
+    /// 保留原有逐 packet/事件输出。
+    Events,
+    /// 按双向 TCP 链路聚合展示建连、传输、断开。
+    Links,
 }
 
 /// CLI 主入口只负责参数解析、调用底层 crate、选择输出 sink。
@@ -53,6 +76,8 @@ fn main() -> Result<()> {
             filter,
             count,
             payload_limit,
+            view,
+            link_filter,
         } => {
             let config = PcapSourceConfig {
                 interface,
@@ -61,7 +86,7 @@ fn main() -> Result<()> {
                 ..PcapSourceConfig::default()
             };
 
-            run_capture(config, count)?;
+            run_capture(config, count, view, link_filter)?;
         }
     }
 
@@ -69,13 +94,29 @@ fn main() -> Result<()> {
 }
 
 /// 执行 pcap 抓包并将事件写入格式化输出 sink。
-fn run_capture(config: PcapSourceConfig, count: Option<usize>) -> Result<()> {
+fn run_capture(
+    config: PcapSourceConfig,
+    count: Option<usize>,
+    view: CaptureView,
+    link_filter: Vec<String>,
+) -> Result<()> {
     let mut source = PcapSource::new(config)?;
+    let running = Arc::new(AtomicBool::new(true));
+    let signal_running = Arc::clone(&running);
+    ctrlc::set_handler(move || {
+        signal_running.store(false, Ordering::SeqCst);
+    })
+    .map_err(|error| Error::InvalidConfig(format!("failed to install Ctrl-C handler: {error}")))?;
+
     let stdout = std::io::stdout();
-    let mut sink = FormattedEventSink::new(stdout.lock());
+    let stdout = stdout.lock();
+    let mut sink: Box<dyn EventSink + '_> = match view {
+        CaptureView::Events => Box::new(FormattedEventSink::new(stdout)),
+        CaptureView::Links => Box::new(LinkEventSink::new_with_filters(stdout, link_filter)),
+    };
     let mut emitted_packets = 0usize;
 
-    loop {
+    while running.load(Ordering::SeqCst) {
         if let Some(event) = source.next_event()? {
             // `--count` 只统计真实 packet，不统计 capture_started 等控制事件。
             let is_packet = matches!(
