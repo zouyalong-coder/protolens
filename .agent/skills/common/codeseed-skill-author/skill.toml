@@ -1,0 +1,11 @@
+schema = 1
+id = "codeseed-skill-author"
+name = "Codeseed Skill Author"
+version = "0.1.0"
+target = "common"
+entry = "SKILL.md"
+
+[source]
+type = "preset"
+package = "codeseed"
+

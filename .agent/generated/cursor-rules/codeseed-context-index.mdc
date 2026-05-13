@@ -1,0 +1,8 @@
+---
+description: 维护 docs/context 作为简洁的项目上下文索引，让新的模型 thread 能快速发现架构、约束、模块设计、Git 规则、可复用组件等工作背景。
+globs:
+alwaysApply: true
+---
+
+Use the Codeseed-managed skill at `.agent/skills/common/codeseed-context-index/SKILL.md`.
+Follow its front matter and instructions when this task matches its description, triggers, or default behavior.

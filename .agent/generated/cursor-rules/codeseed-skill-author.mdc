@@ -1,0 +1,8 @@
+---
+description: 创建、审查和改进 Codeseed 管理的 agent skills。适用于 skill.toml、SKILL.md、preset skills 或项目 skill 元数据相关工作。
+globs:
+alwaysApply: false
+---
+
+Use the Codeseed-managed skill at `.agent/skills/common/codeseed-skill-author/SKILL.md`.
+Follow its front matter and instructions when this task matches its description, triggers, or default behavior.

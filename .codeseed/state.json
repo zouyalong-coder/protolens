@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "agentDir": ".agent",
+  "codeseedDir": ".codeseed",
+  "installedSkills": [
+    { "id": "codeseed-context-index", "source": "preset:codeseed-context-index", "target": "common" },
+    { "id": "codeseed-skill-author", "source": "preset:codeseed-skill-author", "target": "common" }
+  ]
+}
