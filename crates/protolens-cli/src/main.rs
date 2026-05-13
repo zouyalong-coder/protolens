@@ -104,6 +104,7 @@ fn run_capture(
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
     ctrlc::set_handler(move || {
+        eprintln!("[protolens] Ctrl-C received; stopping capture...");
         signal_running.store(false, Ordering::SeqCst);
     })
     .map_err(|error| Error::InvalidConfig(format!("failed to install Ctrl-C handler: {error}")))?;
@@ -135,6 +136,8 @@ fn run_capture(
             }
         }
     }
+
+    eprintln!("[protolens] capture loop stopped");
 
     Ok(())
 }
