@@ -295,6 +295,7 @@ dependencies = [
  "clap",
  "protolens-capture",
  "protolens-core",
+ "protolens-output",
  "protolens-protocol",
  "tracing",
  "tracing-subscriber",
@@ -308,6 +309,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "protolens-output"
+version = "0.1.0"
+dependencies = [
+ "protolens-core",
 ]
 
 [[package]]

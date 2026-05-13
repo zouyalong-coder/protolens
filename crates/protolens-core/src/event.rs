@@ -2,51 +2,82 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
+/// 事件时间戳，统一使用 Unix epoch 毫秒。
 pub type TimestampMillis = u64;
 
+/// ProtoLens 当前识别的传输层协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportProtocol {
+    /// 第一阶段只支持 TCP。
     Tcp,
 }
 
+/// 带端口的网络端点。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Endpoint {
+    /// IP 地址，支持 IPv4 和 IPv6。
     pub address: IpAddr,
+    /// 传输层端口。
     pub port: u16,
 }
 
+/// 传输层 flow 标识。
+///
+/// 这里保留方向性，source/destination 表示当前 packet 的方向；后续 session
+/// tracking 可以在更高层做双向归一化。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FlowKey {
+    /// 当前 packet 的源端点。
     pub source: Endpoint,
+    /// 当前 packet 的目标端点。
     pub destination: Endpoint,
+    /// 传输层协议。
     pub transport: TransportProtocol,
 }
 
+/// session 内部的字节方向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
+    /// 客户端到服务端。
     ClientToServer,
+    /// 服务端到客户端。
     ServerToClient,
+    /// 尚未建立 session 方向判断时使用。
     Unknown,
 }
 
+/// payload 在结构化事件里的编码方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadEncoding {
+    /// bytes 统一用 base64 保存，避免非 UTF-8 数据丢失。
     Base64,
 }
 
+/// 捕获到的原始负载。
+///
+/// `data` 永远表示 bytes 的编码结果；`preview` 只是可读文本辅助展示，不能作为
+/// 协议解析的真实输入。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Payload {
+    /// `data` 字段的编码方式。
     pub encoding: PayloadEncoding,
+    /// 编码后的 payload 数据。
     pub data: String,
+    /// 原始 payload 字节长度。
     pub original_len: usize,
+    /// 当前事件是否只保存了前缀数据。
     pub truncated: bool,
+    /// UTF-8 可读时提供的展示预览。
     pub preview: Option<String>,
 }
 
 impl Payload {
+    /// 从原始 bytes 创建结构化 payload。
+    ///
+    /// `max_len` 用于限制事件体大小；即使截断，`original_len` 也保留真实长度。
     pub fn from_bytes(bytes: &[u8], max_len: Option<usize>) -> Self {
         let limit = max_len.unwrap_or(bytes.len());
         let stored_len = bytes.len().min(limit);
@@ -62,59 +93,95 @@ impl Payload {
     }
 }
 
+/// TCP session 结束原因。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionEndReason {
+    /// 正常关闭。
     Closed,
+    /// 超时关闭。
     Timeout,
+    /// TCP reset。
     Reset,
+    /// 抓包任务停止导致 session 结束。
     CaptureStopped,
+    /// 结束原因未知。
     Unknown,
 }
 
+/// session 级元信息。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionMeta {
+    /// session 唯一标识。
     pub id: String,
+    /// session 关联的 flow。
     pub flow: FlowKey,
+    /// session 开始时间。
     pub started_at: TimestampMillis,
 }
 
+/// ProtoLens pipeline 中传递的统一事件 envelope。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaptureEvent {
+    /// 事件发生时间。
     pub timestamp: TimestampMillis,
+    /// 事件来源，例如 `pcap:en0`。
     pub source_id: String,
+    /// 具体事件内容。
     pub kind: CaptureEventKind,
 }
 
+/// 捕获和分析过程中产生的事件类型。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CaptureEventKind {
+    /// 抓包任务开始。
     CaptureStarted {
+        /// 抓包模式，例如 `pcap`、未来的 `proxy` 或 `tun`。
         mode: String,
     },
+    /// 网卡级 packet 事件。
     InterfacePacket {
+        /// 能解析出传输层信息时携带 flow。
         flow: Option<FlowKey>,
+        /// packet 中的 TCP payload；纯 ACK 等无负载 packet 为空。
         payload: Option<Payload>,
     },
+    /// TCP session 开始。
     TcpSessionStarted {
+        /// 新 session 的元信息。
         session: SessionMeta,
     },
+    /// TCP session 内的字节数据。
     TcpBytes {
+        /// session 唯一标识。
         session_id: String,
+        /// 字节方向。
         direction: Direction,
+        /// 数据负载。
         payload: Payload,
     },
+    /// TCP session 结束。
     TcpSessionEnded {
+        /// session 唯一标识。
         session_id: String,
+        /// 结束原因。
         reason: SessionEndReason,
     },
+    /// 协议分析器输出的高层观察结果。
     ProtocolObservation {
+        /// 分析器标识。
         analyzer_id: String,
+        /// 关联 session；非 session 级观察可以为空。
         session_id: Option<String>,
+        /// 面向人类的摘要。
         summary: String,
+        /// 机器可读的扩展信息。
         metadata: serde_json::Value,
     },
+    /// pipeline 内部错误事件。
     Error {
+        /// 错误描述。
         message: String,
     },
 }
