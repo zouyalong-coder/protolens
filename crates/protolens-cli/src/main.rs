@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use protolens_capture::{CaptureInterface, PcapSource, PcapSourceConfig, list_interfaces};
-use protolens_core::{Error, EventSink, PacketSource, Result};
+use protolens_capture::CaptureInterface;
+use protolens_controller::{CaptureRunConfig, capture_interfaces};
+use protolens_core::{Error, EventSink, Result};
 use protolens_output::{FormattedEventSink, LinkEventSink};
 use std::sync::{
     Arc,
@@ -67,7 +68,7 @@ fn main() -> Result<()> {
 
     match Cli::parse().command {
         Command::Interfaces => {
-            for interface in list_interfaces()? {
+            for interface in capture_interfaces()? {
                 print_interface(interface);
             }
         }
@@ -79,14 +80,9 @@ fn main() -> Result<()> {
             view,
             link_filter,
         } => {
-            let config = PcapSourceConfig {
-                interface,
-                filter: Some(filter),
-                payload_limit: Some(payload_limit),
-                ..PcapSourceConfig::default()
-            };
+            let config = CaptureRunConfig::pcap(interface, filter, count, payload_limit);
 
-            run_capture(config, count, view, link_filter)?;
+            run_capture(config, view, link_filter)?;
         }
     }
 
@@ -95,12 +91,10 @@ fn main() -> Result<()> {
 
 /// 执行 pcap 抓包并将事件写入格式化输出 sink。
 fn run_capture(
-    config: PcapSourceConfig,
-    count: Option<usize>,
+    config: CaptureRunConfig,
     view: CaptureView,
     link_filter: Vec<String>,
 ) -> Result<()> {
-    let mut source = PcapSource::new(config)?;
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
     ctrlc::set_handler(move || {
@@ -115,27 +109,16 @@ fn run_capture(
         CaptureView::Events => Box::new(FormattedEventSink::new(stdout)),
         CaptureView::Links => Box::new(LinkEventSink::new_with_filters(stdout, link_filter)),
     };
-    let mut emitted_packets = 0usize;
 
-    while running.load(Ordering::SeqCst) {
-        if let Some(event) = source.next_event()? {
-            // `--count` 只统计真实 packet，不统计 capture_started 等控制事件。
-            let is_packet = matches!(
-                event.kind,
-                protolens_core::CaptureEventKind::InterfacePacket { .. }
-            );
-
+    protolens_controller::run_capture(
+        config,
+        |event| {
             sink.write(&event)?;
             sink.flush()?;
-
-            if is_packet {
-                emitted_packets += 1;
-                if count.is_some_and(|count| emitted_packets >= count) {
-                    break;
-                }
-            }
-        }
-    }
+            Ok(())
+        },
+        || running.load(Ordering::SeqCst),
+    )?;
 
     eprintln!("[protolens] capture loop stopped");
 

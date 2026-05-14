@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ProtoLens</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="sidebar">
+        <div>
+          <p class="eyebrow">ProtoLens</p>
+          <h1>Traffic capture desk</h1>
+          <p class="intro">Capture TCP packets with the same Rust controller used by the CLI.</p>
+        </div>
+
+        <label>
+          Interface
+          <select id="interfaceSelect"></select>
+        </label>
+
+        <label>
+          BPF Filter
+          <input id="filterInput" value="tcp or udp port 53" spellcheck="false" />
+        </label>
+
+        <div class="field-grid">
+          <label>
+            Payload Limit
+            <input id="payloadLimitInput" type="number" min="0" value="4096" />
+          </label>
+          <label>
+            Count
+            <input id="countInput" type="number" min="1" placeholder="live" />
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="startButton">Start</button>
+          <button id="stopButton" class="secondary" disabled>Stop</button>
+        </div>
+
+        <button id="refreshButton" class="ghost">Refresh interfaces</button>
+        <p id="status" class="status">Ready</p>
+      </section>
+
+      <section class="content">
+        <div class="toolbar">
+          <div>
+            <p class="eyebrow">Live Events</p>
+            <h2>Packets and DNS observations</h2>
+          </div>
+          <button id="clearButton" class="ghost">Clear</button>
+        </div>
+
+        <div id="events" class="events"></div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

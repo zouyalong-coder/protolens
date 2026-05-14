@@ -1,17 +1,16 @@
 [package]
-name = "protolens-cli"
+name = "protolens-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-clap.workspace = true
-ctrlc.workspace = true
 protolens-capture.workspace = true
 protolens-controller.workspace = true
 protolens-core.workspace = true
-protolens-output.workspace = true
-protolens-protocol.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
+serde.workspace = true
+tauri.workspace = true
+
+[build-dependencies]
+tauri-build.workspace = true

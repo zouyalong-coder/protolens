@@ -1,11 +1,10 @@
 [package]
-name = "protolens-capture"
+name = "protolens-controller"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-pcap.workspace = true
+protolens-capture.workspace = true
 protolens-core.workspace = true
-serde.workspace = true

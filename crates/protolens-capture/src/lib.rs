@@ -8,9 +8,10 @@ use protolens_core::{
     CaptureEvent, CaptureEventKind, DnsResolution, Endpoint, Error, FlowKey, PacketSource, Payload,
     Result, TcpSegmentMeta, TransportProtocol,
 };
+use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// 可用于抓包的系统网卡信息。
 pub struct CaptureInterface {
     /// 系统网卡名，例如 macOS 的 `en0` 或 Linux 的 `eth0`。
@@ -23,7 +24,7 @@ pub struct CaptureInterface {
     pub flags: InterfaceFlags,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// 网卡上的一个地址记录。
 pub struct InterfaceAddress {
     /// 网卡地址。
@@ -36,7 +37,7 @@ pub struct InterfaceAddress {
     pub destination_address: Option<IpAddr>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// 网卡状态和能力。
 pub struct InterfaceFlags {
     /// 是否为 loopback 接口。
@@ -51,7 +52,7 @@ pub struct InterfaceFlags {
     pub connection_status: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// pcap 抓包源配置。
 pub struct PcapSourceConfig {
     /// 要打开的网卡名。
