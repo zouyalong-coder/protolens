@@ -36,6 +36,17 @@ pub struct FlowKey {
     pub transport: TransportProtocol,
 }
 
+/// 从 DNS 响应中学习到的域名到地址映射。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DnsResolution {
+    /// 查询或响应中的域名。
+    pub hostname: String,
+    /// DNS A/AAAA 记录解析出的地址。
+    pub address: IpAddr,
+    /// DNS 响应 TTL，单位秒。
+    pub ttl_seconds: u32,
+}
+
 /// TCP segment 元信息。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpSegmentMeta {
@@ -179,6 +190,11 @@ pub enum CaptureEventKind {
         tcp: Option<TcpSegmentMeta>,
         /// packet 中的 TCP payload；纯 ACK 等无负载 packet 为空。
         payload: Option<Payload>,
+    },
+    /// 从 DNS 响应包中提取出的解析结果。
+    DnsResolved {
+        /// 本次 DNS 响应中可用于展示的地址映射。
+        resolutions: Vec<DnsResolution>,
     },
     /// TCP session 开始。
     TcpSessionStarted {

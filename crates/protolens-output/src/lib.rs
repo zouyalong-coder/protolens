@@ -8,6 +8,7 @@ use protolens_core::{
 };
 use std::collections::HashMap;
 use std::io::Write;
+use std::net::IpAddr;
 
 /// 面向终端的可读格式化输出 sink。
 ///
@@ -17,6 +18,8 @@ pub struct FormattedEventSink<W> {
     writer: W,
     /// sink 标识。
     id: String,
+    /// 从 DNS 响应中学习到的 IP -> 域名缓存。
+    dns_names: HashMap<IpAddr, String>,
 }
 
 impl<W> FormattedEventSink<W> {
@@ -25,6 +28,7 @@ impl<W> FormattedEventSink<W> {
         Self {
             writer,
             id: "formatted".to_owned(),
+            dns_names: HashMap::new(),
         }
     }
 }
@@ -47,7 +51,7 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
                 write!(self.writer, "[{}] packet", event.timestamp)?;
 
                 if let Some(flow) = flow {
-                    write!(self.writer, " {}", format_flow(flow))?;
+                    write!(self.writer, " {}", format_flow(flow, &self.dns_names))?;
                 }
 
                 if let Some(tcp) = tcp {
@@ -62,13 +66,27 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
 
                 writeln!(self.writer)?;
             }
+            CaptureEventKind::DnsResolved { resolutions } => {
+                for resolution in resolutions {
+                    self.dns_names
+                        .insert(resolution.address, resolution.hostname.clone());
+                    writeln!(
+                        self.writer,
+                        "[{}] dns {} -> {} ttl={}s",
+                        event.timestamp,
+                        resolution.hostname,
+                        resolution.address,
+                        resolution.ttl_seconds
+                    )?;
+                }
+            }
             CaptureEventKind::TcpSessionStarted { session } => {
                 writeln!(
                     self.writer,
                     "[{}] tcp session started id={} {}",
                     event.timestamp,
                     session.id,
-                    format_flow(&session.flow)
+                    format_flow(&session.flow, &self.dns_names)
                 )?;
             }
             CaptureEventKind::TcpBytes {
@@ -135,6 +153,8 @@ pub struct LinkEventSink<W> {
     next_link_id: usize,
     /// 端点过滤条件；为空表示输出所有 link。
     endpoint_filters: Vec<String>,
+    /// 从 DNS 响应中学习到的 IP -> 域名缓存。
+    dns_names: HashMap<IpAddr, String>,
 }
 
 impl<W> LinkEventSink<W> {
@@ -151,6 +171,7 @@ impl<W> LinkEventSink<W> {
             links: HashMap::new(),
             next_link_id: 1,
             endpoint_filters,
+            dns_names: HashMap::new(),
         }
     }
 }
@@ -161,13 +182,20 @@ impl<W: Write> EventSink for LinkEventSink<W> {
     }
 
     fn write(&mut self, event: &CaptureEvent) -> Result<()> {
-        let CaptureEventKind::InterfacePacket {
-            flow: Some(flow),
-            tcp: Some(tcp),
-            payload,
-        } = &event.kind
-        else {
-            return Ok(());
+        let (flow, tcp, payload) = match &event.kind {
+            CaptureEventKind::DnsResolved { resolutions } => {
+                for resolution in resolutions {
+                    self.dns_names
+                        .insert(resolution.address, resolution.hostname.clone());
+                }
+                return Ok(());
+            }
+            CaptureEventKind::InterfacePacket {
+                flow: Some(flow),
+                tcp: Some(tcp),
+                payload,
+            } => (flow, tcp, payload),
+            _ => return Ok(()),
         };
 
         if !self.matches_filters(flow) {
@@ -187,7 +215,10 @@ impl<W: Write> EventSink for LinkEventSink<W> {
             writeln!(
                 self.writer,
                 "[{}] link {} new {} -> {}",
-                event.timestamp, link.id, link.client, link.server
+                event.timestamp,
+                link.id,
+                format_endpoint(&link.client, &self.dns_names),
+                format_endpoint(&link.server, &self.dns_names)
             )?;
             link.announced = true;
         }
@@ -195,13 +226,16 @@ impl<W: Write> EventSink for LinkEventSink<W> {
         let direction = link.direction(flow);
 
         if tcp.syn && !tcp.ack && !link.seen_syn {
-            link.client = format_endpoint(&flow.source);
-            link.server = format_endpoint(&flow.destination);
+            link.client = flow.source.clone();
+            link.server = flow.destination.clone();
             link.seen_syn = true;
             writeln!(
                 self.writer,
                 "[{}] link {} connect syn {} -> {}",
-                event.timestamp, link.id, link.client, link.server
+                event.timestamp,
+                link.id,
+                format_endpoint(&link.client, &self.dns_names),
+                format_endpoint(&link.server, &self.dns_names)
             )?;
         } else if tcp.syn && tcp.ack && !link.seen_syn_ack {
             link.seen_syn_ack = true;
@@ -284,8 +318,8 @@ impl<W> LinkEventSink<W> {
             return true;
         }
 
-        let source = format_endpoint(&flow.source);
-        let destination = format_endpoint(&flow.destination);
+        let source = format_endpoint(&flow.source, &self.dns_names);
+        let destination = format_endpoint(&flow.destination, &self.dns_names);
         let link = format!("{source} -> {destination}");
 
         self.endpoint_filters.iter().any(|filter| {
@@ -302,8 +336,8 @@ struct LinkKey {
 
 impl LinkKey {
     fn from_flow(flow: &FlowKey) -> Self {
-        let source = format_endpoint(&flow.source);
-        let destination = format_endpoint(&flow.destination);
+        let source = format_endpoint_key(&flow.source);
+        let destination = format_endpoint_key(&flow.destination);
 
         if source <= destination {
             Self {
@@ -322,8 +356,8 @@ impl LinkKey {
 #[derive(Debug, Clone)]
 struct LinkState {
     id: usize,
-    client: String,
-    server: String,
+    client: Endpoint,
+    server: Endpoint,
     announced: bool,
     seen_syn: bool,
     seen_syn_ack: bool,
@@ -339,8 +373,8 @@ impl LinkState {
     fn new(id: usize, flow: &FlowKey) -> Self {
         Self {
             id,
-            client: format_endpoint(&flow.source),
-            server: format_endpoint(&flow.destination),
+            client: flow.source.clone(),
+            server: flow.destination.clone(),
             announced: false,
             seen_syn: false,
             seen_syn_ack: false,
@@ -354,7 +388,7 @@ impl LinkState {
     }
 
     fn direction(&self, flow: &FlowKey) -> LinkDirection {
-        if format_endpoint(&flow.source) == self.client {
+        if flow.source == self.client {
             LinkDirection::ClientToServer
         } else {
             LinkDirection::ServerToClient
@@ -392,13 +426,11 @@ impl LinkDirection {
 }
 
 /// 将 flow 格式化成一行可读的五元组信息。
-fn format_flow(flow: &FlowKey) -> String {
+fn format_flow(flow: &FlowKey, dns_names: &HashMap<IpAddr, String>) -> String {
     format!(
-        "{}:{} -> {}:{} {:?}",
-        flow.source.address,
-        flow.source.port,
-        flow.destination.address,
-        flow.destination.port,
+        "{} -> {} {:?}",
+        format_endpoint(&flow.source, dns_names),
+        format_endpoint(&flow.destination, dns_names),
         flow.transport
     )
 }
@@ -434,7 +466,15 @@ fn format_tcp_flags(tcp: &TcpSegmentMeta) -> String {
 }
 
 /// 将 endpoint 格式化为稳定 key 和展示文本。
-fn format_endpoint(endpoint: &Endpoint) -> String {
+fn format_endpoint(endpoint: &Endpoint, dns_names: &HashMap<IpAddr, String>) -> String {
+    if let Some(hostname) = dns_names.get(&endpoint.address) {
+        format!("{}({}):{}", hostname, endpoint.address, endpoint.port)
+    } else {
+        format_endpoint_key(endpoint)
+    }
+}
+
+fn format_endpoint_key(endpoint: &Endpoint) -> String {
     format!("{}:{}", endpoint.address, endpoint.port)
 }
 
@@ -462,7 +502,8 @@ fn format_payload(payload: &Payload) -> String {
 mod tests {
     use super::*;
     use protolens_core::{
-        CaptureEventKind, Endpoint, FlowKey, Payload, TcpSegmentMeta, TransportProtocol,
+        CaptureEventKind, DnsResolution, Endpoint, FlowKey, Payload, TcpSegmentMeta,
+        TransportProtocol,
     };
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -556,6 +597,36 @@ mod tests {
 
         assert!(!output.contains("192.168.0.2:80"));
         assert!(output.contains("192.168.0.2:443"));
+    }
+
+    #[test]
+    fn formatted_sink_uses_dns_names_for_later_packets() {
+        let mut output = Vec::new();
+        let mut sink = FormattedEventSink::new(&mut output);
+
+        sink.write(&CaptureEvent {
+            timestamp: 1,
+            source_id: "test".to_owned(),
+            kind: CaptureEventKind::DnsResolved {
+                resolutions: vec![DnsResolution {
+                    hostname: "example.com".to_owned(),
+                    address: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)),
+                    ttl_seconds: 60,
+                }],
+            },
+        })
+        .unwrap();
+        sink.write(&packet_event(
+            2,
+            flow(12_345, 443),
+            TcpSegmentMeta::from_flags_byte(0x02),
+            None,
+        ))
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("dns example.com -> 192.168.0.2 ttl=60s"));
+        assert!(output.contains("example.com(192.168.0.2):443"));
     }
 
     fn packet_event(

@@ -1,0 +1,8 @@
+---
+description: 管理同一个仓库的多个 Git 远程仓库，包括添加、删除、fetch、pull，以及向 GitHub、Gitee 等多个 remote push。
+globs:
+alwaysApply: true
+---
+
+Use the Codeseed-managed skill at `.agent/skills/common/codeseed-multi-git-remote/SKILL.md`.
+Follow its front matter and instructions when this task matches its description, triggers, or default behavior.

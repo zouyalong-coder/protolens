@@ -5,8 +5,8 @@
 
 use pcap::{Active, Capture, Linktype};
 use protolens_core::{
-    CaptureEvent, CaptureEventKind, Endpoint, Error, FlowKey, PacketSource, Payload, Result,
-    TcpSegmentMeta, TransportProtocol,
+    CaptureEvent, CaptureEventKind, DnsResolution, Endpoint, Error, FlowKey, PacketSource, Payload,
+    Result, TcpSegmentMeta, TransportProtocol,
 };
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -56,7 +56,7 @@ pub struct InterfaceFlags {
 pub struct PcapSourceConfig {
     /// 要打开的网卡名。
     pub interface: String,
-    /// BPF filter，例如 `tcp` 或 `tcp port 443`。
+    /// BPF filter，例如 `tcp`、`tcp port 443` 或 `tcp or udp port 53`。
     pub filter: Option<String>,
     /// 单个 packet 最大捕获长度。
     pub snaplen: i32,
@@ -74,7 +74,7 @@ impl Default for PcapSourceConfig {
     fn default() -> Self {
         Self {
             interface: String::new(),
-            filter: Some("tcp".to_owned()),
+            filter: Some("tcp or udp port 53".to_owned()),
             snaplen: 65_535,
             immediate_mode: true,
             promiscuous: false,
@@ -157,9 +157,19 @@ impl PacketSource for PcapSource {
                 Err(error) => return Err(map_pcap_error("failed to read pcap packet")(error)),
             };
 
-            // 目前只把 TCP packet 转成事件；其他协议会被静默跳过，后续协议支持
-            // 可以在这里扩展或拆到独立 decoder。
+            // DNS 响应用于维护 IP -> 域名展示缓存，TCP packet 仍然是主要输出事件。
             let timestamp = packet_timestamp_millis(packet.header);
+            let dns_resolutions = parse_dns_resolutions(self.linktype, packet.data);
+            if !dns_resolutions.is_empty() {
+                return Ok(Some(CaptureEvent {
+                    timestamp,
+                    source_id: self.id.clone(),
+                    kind: CaptureEventKind::DnsResolved {
+                        resolutions: dns_resolutions,
+                    },
+                }));
+            }
+
             let parsed = parse_tcp_packet(self.linktype, packet.data, self.payload_limit);
 
             if let Some((flow, tcp, payload)) = parsed {
@@ -232,6 +242,203 @@ fn parse_tcp_packet(
     };
 
     parse_ip_packet(ip_packet, payload_limit)
+}
+
+/// 根据链路层类型剥离链路层头，并尝试解析 DNS 响应里的 A/AAAA 记录。
+fn parse_dns_resolutions(linktype: Linktype, packet: &[u8]) -> Vec<DnsResolution> {
+    let Some(ip_packet) = (match linktype {
+        Linktype::ETHERNET => ethernet_payload(packet),
+        Linktype::IPV4 | Linktype::IPV6 | Linktype::RAW => Some(packet),
+        Linktype::NULL | Linktype::LOOP => loopback_payload(packet),
+        _ => None,
+    }) else {
+        return Vec::new();
+    };
+
+    parse_dns_resolutions_from_ip(ip_packet)
+}
+
+fn parse_dns_resolutions_from_ip(packet: &[u8]) -> Vec<DnsResolution> {
+    match packet.first().map(|byte| byte >> 4) {
+        Some(4) => parse_ipv4_udp_dns(packet),
+        Some(6) => parse_ipv6_udp_dns(packet),
+        _ => Vec::new(),
+    }
+}
+
+fn parse_ipv4_udp_dns(packet: &[u8]) -> Vec<DnsResolution> {
+    if packet.len() < 20 {
+        return Vec::new();
+    }
+
+    let header_len = usize::from(packet[0] & 0x0f) * 4;
+    if header_len < 20 || packet.len() < header_len || packet[9] != 17 {
+        return Vec::new();
+    }
+
+    let total_len = usize::from(u16::from_be_bytes([packet[2], packet[3]])).min(packet.len());
+    if total_len < header_len {
+        return Vec::new();
+    }
+
+    parse_udp_dns_datagram(&packet[header_len..total_len])
+}
+
+/// 解析不带扩展头的 IPv6 UDP DNS packet。
+fn parse_ipv6_udp_dns(packet: &[u8]) -> Vec<DnsResolution> {
+    if packet.len() < 40 || packet[6] != 17 {
+        return Vec::new();
+    }
+
+    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
+    let total_len = (40 + payload_len).min(packet.len());
+    if total_len < 40 {
+        return Vec::new();
+    }
+
+    parse_udp_dns_datagram(&packet[40..total_len])
+}
+
+fn parse_udp_dns_datagram(datagram: &[u8]) -> Vec<DnsResolution> {
+    if datagram.len() < 8 {
+        return Vec::new();
+    }
+
+    let source_port = u16::from_be_bytes([datagram[0], datagram[1]]);
+    let destination_port = u16::from_be_bytes([datagram[2], datagram[3]]);
+    if source_port != 53 && destination_port != 53 {
+        return Vec::new();
+    }
+
+    let udp_len = usize::from(u16::from_be_bytes([datagram[4], datagram[5]])).min(datagram.len());
+    if udp_len < 8 {
+        return Vec::new();
+    }
+
+    parse_dns_message(&datagram[8..udp_len])
+}
+
+fn parse_dns_message(message: &[u8]) -> Vec<DnsResolution> {
+    if message.len() < 12 {
+        return Vec::new();
+    }
+
+    let flags = u16::from_be_bytes([message[2], message[3]]);
+    if flags & 0x8000 == 0 {
+        return Vec::new();
+    }
+
+    let question_count = usize::from(u16::from_be_bytes([message[4], message[5]]));
+    let answer_count = usize::from(u16::from_be_bytes([message[6], message[7]]));
+    let mut offset = 12;
+
+    for _ in 0..question_count {
+        if read_dns_name(message, &mut offset).is_none() || message.len() < offset + 4 {
+            return Vec::new();
+        }
+        offset += 4;
+    }
+
+    let mut resolutions = Vec::new();
+    for _ in 0..answer_count {
+        let Some(hostname) = read_dns_name(message, &mut offset) else {
+            return resolutions;
+        };
+        if message.len() < offset + 10 {
+            return resolutions;
+        }
+
+        let record_type = u16::from_be_bytes([message[offset], message[offset + 1]]);
+        let class = u16::from_be_bytes([message[offset + 2], message[offset + 3]]);
+        let ttl_seconds = u32::from_be_bytes([
+            message[offset + 4],
+            message[offset + 5],
+            message[offset + 6],
+            message[offset + 7],
+        ]);
+        let data_len = usize::from(u16::from_be_bytes([
+            message[offset + 8],
+            message[offset + 9],
+        ]));
+        offset += 10;
+
+        if message.len() < offset + data_len {
+            return resolutions;
+        }
+
+        let data = &message[offset..offset + data_len];
+        let address = match (record_type, class, data_len) {
+            (1, 1, 4) => Some(IpAddr::V4(Ipv4Addr::new(
+                data[0], data[1], data[2], data[3],
+            ))),
+            (28, 1, 16) => Some(IpAddr::V6(Ipv6Addr::from(
+                <[u8; 16]>::try_from(data).expect("checked AAAA record length"),
+            ))),
+            _ => None,
+        };
+
+        if let Some(address) = address {
+            resolutions.push(DnsResolution {
+                hostname,
+                address,
+                ttl_seconds,
+            });
+        }
+
+        offset += data_len;
+    }
+
+    resolutions
+}
+
+fn read_dns_name(message: &[u8], offset: &mut usize) -> Option<String> {
+    let mut labels = Vec::new();
+    let mut cursor = *offset;
+    let mut jumped = false;
+    let mut jumps = 0;
+
+    loop {
+        let length = *message.get(cursor)?;
+        if length & 0xc0 == 0xc0 {
+            let next = *message.get(cursor + 1)?;
+            let pointer = usize::from(u16::from_be_bytes([length & 0x3f, next]));
+            if pointer >= message.len() || jumps > 16 {
+                return None;
+            }
+            if !jumped {
+                *offset = cursor + 2;
+                jumped = true;
+            }
+            cursor = pointer;
+            jumps += 1;
+            continue;
+        }
+
+        if length & 0xc0 != 0 {
+            return None;
+        }
+
+        cursor += 1;
+        if length == 0 {
+            if !jumped {
+                *offset = cursor;
+            }
+            break;
+        }
+
+        let end = cursor + usize::from(length);
+        if end > message.len() {
+            return None;
+        }
+        labels.push(
+            std::str::from_utf8(&message[cursor..end])
+                .ok()?
+                .to_ascii_lowercase(),
+        );
+        cursor = end;
+    }
+
+    (!labels.is_empty()).then(|| labels.join("."))
 }
 
 /// 解析 Ethernet frame，返回 IPv4/IPv6 payload。
@@ -420,5 +627,25 @@ mod tests {
         ];
 
         assert!(parse_ip_packet(&packet, None).is_none());
+    }
+
+    #[test]
+    fn parses_dns_a_response() {
+        let message = [
+            0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01, 0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04, 93, 184,
+            216, 34,
+        ];
+
+        let resolutions = parse_dns_message(&message);
+
+        assert_eq!(resolutions.len(), 1);
+        assert_eq!(resolutions[0].hostname, "example.com");
+        assert_eq!(
+            resolutions[0].address,
+            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))
+        );
+        assert_eq!(resolutions[0].ttl_seconds, 60);
     }
 }

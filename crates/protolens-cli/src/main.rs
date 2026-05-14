@@ -28,8 +28,8 @@ enum Command {
         #[arg(short, long)]
         interface: String,
 
-        /// BPF filter，默认只抓 TCP。
-        #[arg(short, long, default_value = "tcp")]
+        /// BPF filter，默认抓 TCP 和 DNS 响应以便显示域名。
+        #[arg(short, long, default_value = "tcp or udp port 53")]
         filter: String,
 
         /// 输出指定数量的 packet 后退出；不传则持续运行。
