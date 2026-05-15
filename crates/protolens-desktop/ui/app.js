@@ -9,10 +9,14 @@ const startButton = document.querySelector("#startButton");
 const stopButton = document.querySelector("#stopButton");
 const refreshButton = document.querySelector("#refreshButton");
 const clearButton = document.querySelector("#clearButton");
+const allLinksButton = document.querySelector("#allLinksButton");
 const statusText = document.querySelector("#status");
 const events = document.querySelector("#events");
+const links = document.querySelector("#links");
 
 let eventCount = 0;
+let selectedLinkKey = null;
+const linkStates = new Map();
 
 function setRunning(running) {
   startButton.disabled = running;
@@ -26,6 +30,74 @@ function setStatus(message) {
 function endpoint(value) {
   if (!value) return "unknown";
   return `${value.address}:${value.port}`;
+}
+
+function endpointSortKey(value) {
+  return `${value.address}:${String(value.port).padStart(5, "0")}`;
+}
+
+function linkKey(flow) {
+  if (!flow) return null;
+  const endpoints = [flow.source, flow.destination].sort((left, right) =>
+    endpointSortKey(left).localeCompare(endpointSortKey(right)),
+  );
+  return `${endpoint(endpoints[0])}<->${endpoint(endpoints[1])}`;
+}
+
+function getLinkState(flow) {
+  const key = linkKey(flow);
+  if (!key) return null;
+
+  if (!linkStates.has(key)) {
+    linkStates.set(key, {
+      key,
+      firstSource: endpoint(flow.source),
+      firstDestination: endpoint(flow.destination),
+      packets: 0,
+      bytes: 0,
+    });
+  }
+
+  return linkStates.get(key);
+}
+
+function updateLink(flow, payload) {
+  const state = getLinkState(flow);
+  if (!state) return null;
+
+  state.packets += 1;
+  state.bytes += payload?.original_len ?? 0;
+  renderLinks();
+  return state.key;
+}
+
+function renderLinks() {
+  const sorted = [...linkStates.values()].sort((left, right) => right.packets - left.packets);
+  links.replaceChildren();
+
+  for (const link of sorted) {
+    const button = document.createElement("button");
+    button.className = `link-filter${selectedLinkKey === link.key ? " active" : ""}`;
+    button.innerHTML = `
+      <span class="link-filter-title"></span>
+      <span class="link-filter-meta"></span>
+    `;
+    button.querySelector(".link-filter-title").textContent = `${link.firstSource} -> ${link.firstDestination}`;
+    button.querySelector(".link-filter-meta").textContent = `${link.packets} packets, ${link.bytes} bytes`;
+    button.addEventListener("click", () => selectLink(link.key));
+    links.append(button);
+  }
+}
+
+function selectLink(key) {
+  selectedLinkKey = key;
+  allLinksButton.classList.toggle("active", selectedLinkKey === null);
+
+  for (const row of events.children) {
+    row.hidden = selectedLinkKey !== null && row.dataset.linkKey !== selectedLinkKey;
+  }
+
+  renderLinks();
 }
 
 function summarizeEvent(event) {
@@ -65,8 +137,12 @@ function summarizeEvent(event) {
 function appendEvent(event) {
   eventCount += 1;
   const summary = summarizeEvent(event);
+  const flow = event.kind.type === "interface_packet" ? event.kind.flow : null;
+  const rowLinkKey = flow ? updateLink(flow, event.kind.payload) : "";
   const row = document.createElement("article");
   row.className = "event";
+  row.dataset.linkKey = rowLinkKey || "";
+  row.hidden = selectedLinkKey !== null && row.dataset.linkKey !== selectedLinkKey;
   row.innerHTML = `
     <div class="event-header">
       <span>#${eventCount} ${new Date(event.timestamp).toLocaleTimeString()}</span>
@@ -130,8 +206,13 @@ stopButton.addEventListener("click", stopCapture);
 refreshButton.addEventListener("click", loadInterfaces);
 clearButton.addEventListener("click", () => {
   eventCount = 0;
+  selectedLinkKey = null;
+  linkStates.clear();
+  links.replaceChildren();
   events.replaceChildren();
+  allLinksButton.classList.add("active");
 });
+allLinksButton.addEventListener("click", () => selectLink(null));
 
 listen("capture-event", (event) => appendEvent(event.payload));
 listen("capture-error", (event) => {
