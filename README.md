@@ -1,18 +1,19 @@
 # ProtoLens
 
-ProtoLens 是一个使用 Rust 构建的模块化抓包与流量检查工具。当前阶段优先实现 CLI 和可复用核心库，未来会扩展协议分析、HTTPS 显式代理、TUN 模式、桌面端和 AI 分析能力。
+ProtoLens 是一个使用 Rust 构建的模块化抓包与流量检查工具。当前阶段优先实现 CLI、可复用核心库和复用同一控制器的桌面端，未来会扩展协议分析、HTTPS 显式代理、TUN 模式和 AI 分析能力。
 
 ## 当前状态
 
-项目处于初始骨架阶段，已经搭建：
+项目处于早期可运行阶段，已经搭建：
 
 - Cargo workspace。
 - 核心事件模型和统一错误类型。
 - 抓包源、协议分析器、事件输出相关 trait。
 - 静态协议插件注册器。
-- CLI 命令骨架。
+- CLI 抓包、回放和格式化输出入口。
+- Tauri 桌面端，用于选择接口、加载 PCAP、查看链路、事件和 packet timeline。
 
-实际网卡抓包、TCP session tracking、HTTPS 代理尚未实现。
+当前 `capture` 和桌面端只解析常见链路类型上的 IPv4/IPv6 TCP packet，可从 DNS 响应学习域名展示；TCP session tracking、HTTPS 代理尚未实现。
 
 ## Workspace 结构
 
@@ -22,7 +23,9 @@ crates/
   protolens-capture/    抓包后端和 PacketSource 实现
   protolens-output/     格式化输出等 EventSink 插件
   protolens-protocol/   协议分析器和静态插件注册
+  protolens-controller/ CLI 和桌面端复用的控制器入口
   protolens-cli/        CLI 入口
+  protolens-desktop/    Tauri 桌面端
 docs/
   project-brief.md      产品方向和范围
   architecture.md       架构、模块边界和路线图
@@ -92,6 +95,15 @@ cargo run -p protolens-cli -- capture --interface en0 --filter tcp --payload-lim
 网卡抓包通常需要系统权限。例如 macOS/Linux 可能需要用 `sudo` 运行，Windows 通常需要安装 Npcap。
 
 当前 `capture` 只解析常见链路类型上的 IPv4/IPv6 TCP packet，TCP session tracking、HTTPS 代理尚未实现。
+
+## 桌面端 packet 详情
+
+桌面端 timeline 的 packet 详情按协议层展示：
+
+- `L2 Link`、`L3 Network`、`L4 Transport` 和 `Payload` 分区展示各层元数据。
+- 各层分区默认折叠，点击分区标题展开或收起。
+- `Payload` 同时展示 UTF-8 preview 和 base64 原始数据；preview 只用于阅读，真实 bytes 仍以 `payload.data` 为准。
+- Raw Event 不在主详情中常驻显示，只通过详情标题右侧的 `Raw` 调试按钮在提示窗中查看。
 
 ## 开发约定
 

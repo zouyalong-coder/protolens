@@ -87,6 +87,17 @@ pub trait ProtocolAnalyzer {
 - 未来桌面 UI 事件总线。
 - 未来 AI 输入管线。
 
+### Desktop Packet Detail View
+
+桌面端 packet timeline 消费同一套 `CaptureEvent` 和 `PacketMeta`，详情视图按协议层组织，而不是把所有字段压成单行文本。
+
+- `L2 Link` 展示链路介质、封装协议、链路层 header 长度和 frame 长度。
+- `L3 Network` 展示 IP 协议、header 长度、packet 长度和 TTL/hop limit。
+- `L4 Transport` 展示传输协议、源/目标端点、header 长度、segment 长度和 TCP flags。
+- `Payload` 展示原始长度、编码方式、截断状态、UTF-8 preview 和 base64 数据。
+- 各层分区默认折叠，避免详情面板被低频字段占满；用户按需展开查看。
+- Raw Event 属于调试信息，不常驻显示在详情主体，只通过调试入口临时查看。
+
 ## 抓包模式
 
 ### 网卡抓包
