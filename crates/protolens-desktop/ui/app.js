@@ -25,6 +25,7 @@ let selectedLinkKey = null;
 let selectedProtocolView = null;
 const linkStates = new Map();
 const capturedEvents = [];
+const collapsedGroups = new Map();
 let renderScheduled = false;
 let needsLinkRender = false;
 let needsEventRender = false;
@@ -322,6 +323,25 @@ function selectProtocolView(linkKey, layer, protocol) {
   renderLinks();
 }
 
+function protocolViewKey() {
+  if (!selectedProtocolView) return "all";
+  return `${selectedProtocolView.linkKey}|${selectedProtocolView.layer}|${selectedProtocolView.protocol}`;
+}
+
+function groupStateKey(group) {
+  return `${protocolViewKey()}|${group}`;
+}
+
+function isGroupCollapsed(group) {
+  const key = groupStateKey(group);
+  return collapsedGroups.has(key) ? collapsedGroups.get(key) : true;
+}
+
+function toggleGroup(group) {
+  collapsedGroups.set(groupStateKey(group), !isGroupCollapsed(group));
+  renderEvents();
+}
+
 function eventMatchesProtocol(item, view) {
   if (!view) return true;
   if (item.linkKey !== view.linkKey) return false;
@@ -364,11 +384,17 @@ function groupDescription(group, items) {
 
 function createGroupHeader(group, items) {
   const header = document.createElement("section");
-  header.className = "event-group";
+  const collapsed = isGroupCollapsed(group);
+  header.className = `event-group${collapsed ? " collapsed" : ""}`;
   header.innerHTML = `
-    <div class="event-group-title"></div>
+    <button class="event-group-toggle" type="button">
+      <span class="event-group-caret"></span>
+      <span class="event-group-title"></span>
+    </button>
     <div class="event-group-meta"></div>
   `;
+  header.querySelector(".event-group-toggle").addEventListener("click", () => toggleGroup(group));
+  header.querySelector(".event-group-caret").textContent = collapsed ? ">" : "v";
   header.querySelector(".event-group-title").textContent = group;
   header.querySelector(".event-group-meta").textContent = groupDescription(group, items);
   return header;
@@ -455,7 +481,10 @@ function createEventRenderItems(visible) {
   for (const group of orderedGroups) {
     const items = groups.get(group);
     if (!items?.length) continue;
+    const collapsed = isGroupCollapsed(group);
     renderItems.push({ type: "group", group, items });
+    if (collapsed) continue;
+
     for (const item of items) {
       renderItems.push({ type: "event", item });
     }
@@ -614,6 +643,7 @@ function clearEvents() {
   selectedProtocolView = null;
   linkStates.clear();
   capturedEvents.length = 0;
+  collapsedGroups.clear();
   renderScheduled = false;
   needsLinkRender = false;
   needsEventRender = false;

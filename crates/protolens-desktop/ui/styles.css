@@ -293,6 +293,33 @@ button.ghost {
   padding: 0.35rem 0.1rem 0.55rem;
 }
 
+.event-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  min-width: 0;
+  border: 0;
+  border-radius: 0.35rem;
+  padding: 0.18rem 0.25rem;
+  background: transparent;
+  color: #ffe0a6;
+  text-align: left;
+}
+
+.event-group-toggle:hover,
+.event-group-toggle:focus {
+  background: rgba(255, 202, 103, 0.1);
+  outline: none;
+}
+
+.event-group-caret {
+  width: 1rem;
+  flex: 0 0 auto;
+  color: #ffc966;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.74rem;
+}
+
 .event-group:first-child {
   margin-top: 0;
 }
