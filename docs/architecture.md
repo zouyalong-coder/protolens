@@ -91,6 +91,8 @@ pub trait ProtocolAnalyzer {
 
 桌面端 packet timeline 消费同一套 `CaptureEvent` 和 `PacketMeta`，详情视图按协议层组织，而不是把所有字段压成单行文本。
 
+- `Links` 面板按双向 flow 聚合 packet，展示两端 endpoint、TCP phase、包数、payload bytes 和协议栈 chip。
+- `Links` 面板提供显示层过滤输入框，按空格拆分关键词并同时匹配 endpoint、端口、协议、phase 和统计文本；例如输入 `443` 可筛出任一端口包含 `443` 的 HTTPS/TLS 相关 TCP link。该过滤只影响 UI 列表，不替代抓包前的 BPF filter。
 - `L2 Link` 展示链路介质、封装协议、链路层 header 长度和 frame 长度。
 - `L3 Network` 展示 IP 协议、header 长度、packet 长度和 TTL/hop limit。
 - `L4 Transport` 展示传输协议、源/目标端点、header 长度、segment 长度和 TCP flags。

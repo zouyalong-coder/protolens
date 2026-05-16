@@ -24,6 +24,7 @@ const timelinePacketList = document.querySelector("#timelinePacketList");
 const timelinePacketDetail = document.querySelector("#timelinePacketDetail");
 const linkSelect = document.querySelector("#linkSelect");
 const linkCount = document.querySelector("#linkCount");
+const linkFilterInput = document.querySelector("#linkFilterInput");
 const statusText = document.querySelector("#status");
 const events = document.querySelector("#events");
 const links = document.querySelector("#links");
@@ -383,6 +384,42 @@ function protocolItems(link) {
   );
 }
 
+function linkTitle(link) {
+  return link.client && link.server ? `${link.client} -> ${link.server}` : `${link.left} <-> ${link.right}`;
+}
+
+function linkFilterTerms() {
+  return linkFilterInput.value
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function linkSearchText(link) {
+  const protocols = protocolItems(link).map((item) => `${item.layer} ${item.protocol}`);
+  return [
+    linkTitle(link),
+    link.left,
+    link.right,
+    link.client,
+    link.server,
+    link.phase,
+    `${link.packets} packets`,
+    `${link.bytes} bytes`,
+    ...protocols,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function linkMatchesFilter(link, terms) {
+  if (!terms.length) return true;
+  const searchText = linkSearchText(link);
+  return terms.every((term) => searchText.includes(term));
+}
+
 function isProtocolViewActive(linkKey, layer, protocol) {
   return (
     selectedProtocolView?.linkKey === linkKey &&
@@ -393,14 +430,16 @@ function isProtocolViewActive(linkKey, layer, protocol) {
 
 function renderLinks() {
   const sorted = [...linkStates.values()].sort((left, right) => right.packets - left.packets);
+  const filterTerms = linkFilterTerms();
+  const visibleLinks = sorted.filter((link) => linkMatchesFilter(link, filterTerms));
   const previousValue = linkSelect.value;
   const optionFragment = document.createDocumentFragment();
   const linkFragment = document.createDocumentFragment();
   optionFragment.append(new Option("All links", ""));
-  linkCount.textContent = String(sorted.length);
+  linkCount.textContent = filterTerms.length ? `${visibleLinks.length}/${sorted.length}` : String(sorted.length);
 
-  for (const link of sorted) {
-    const title = link.client && link.server ? `${link.client} -> ${link.server}` : `${link.left} <-> ${link.right}`;
+  for (const link of visibleLinks) {
+    const title = linkTitle(link);
     const option = new Option(title, link.key);
     optionFragment.append(option);
 
@@ -440,6 +479,13 @@ function renderLinks() {
       `<- ${link.rightToLeftPackets}/${link.rightToLeftBytes}B`;
     button.addEventListener("click", () => selectLink(link.key));
     linkFragment.append(button);
+  }
+
+  if (!visibleLinks.length) {
+    const empty = document.createElement("div");
+    empty.className = "links-empty";
+    empty.textContent = sorted.length ? "No links match this filter" : "No links captured";
+    linkFragment.append(empty);
   }
 
   linkSelect.replaceChildren(optionFragment);
@@ -795,6 +841,7 @@ function clearEvents() {
   events.replaceChildren();
   linkSelect.replaceChildren(new Option("All links", ""));
   linkCount.textContent = "0";
+  linkFilterInput.value = "";
 }
 
 function timelinePackets() {
@@ -1229,6 +1276,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !timelineModal.hidden) closeTimeline();
 });
 linkSelect.addEventListener("change", () => selectLink(linkSelect.value || null));
+linkFilterInput.addEventListener("input", () => renderLinks());
 events.addEventListener("scroll", () => {
   if (!currentVirtualState || virtualScrollScheduled) return;
 

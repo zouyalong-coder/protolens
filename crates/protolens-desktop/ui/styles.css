@@ -230,6 +230,10 @@ button.ghost {
 }
 
 .link-select {
+  margin-bottom: 0.6rem;
+}
+
+.link-filter-input {
   margin-bottom: 0.85rem;
 }
 
@@ -296,6 +300,15 @@ button.ghost {
   border-color: rgba(255, 202, 103, 0.76);
   background: rgba(255, 202, 103, 0.18);
   color: #ffe0a6;
+}
+
+.links-empty {
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 0.55rem;
+  padding: 0.8rem;
+  color: #9fb3cc;
+  font-size: 0.78rem;
+  text-align: center;
 }
 
 .event {
