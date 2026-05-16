@@ -620,6 +620,14 @@ button.ghost {
   align-content: start;
 }
 
+.timeline-detail-heading {
+  position: relative;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .timeline-detail-kicker,
 .timeline-detail-section-title {
   margin: 0 0 0.28rem;
@@ -635,6 +643,51 @@ button.ghost {
   color: #f6faff;
   font-size: 1rem;
   line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.raw-event-button {
+  flex: 0 0 auto;
+  border: 1px solid rgba(122, 183, 255, 0.34);
+  border-radius: 0.45rem;
+  padding: 0.32rem 0.55rem;
+  background: rgba(122, 183, 255, 0.08);
+  color: #d7e8ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.raw-event-button:hover,
+.raw-event-button:focus {
+  border-color: rgba(255, 202, 103, 0.7);
+  background: rgba(255, 202, 103, 0.13);
+  outline: none;
+}
+
+.raw-event-popover {
+  position: absolute;
+  top: 2.1rem;
+  right: 0;
+  z-index: 5;
+  width: min(32rem, 100%);
+  border: 1px solid rgba(122, 183, 255, 0.28);
+  border-radius: 0.5rem;
+  padding: 0.55rem;
+  background: #111b27;
+  box-shadow: 0 1rem 2rem rgba(0, 0, 0, 0.35);
+}
+
+.raw-event-popover pre {
+  max-height: 22rem;
+  margin: 0;
+  overflow: auto;
+  color: #c7d8ee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -658,6 +711,96 @@ button.ghost {
   overflow-wrap: anywhere;
 }
 
+.packet-layer-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.packet-layer-section {
+  display: grid;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.045);
+  overflow: hidden;
+}
+
+.packet-layer-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  border: 0;
+  padding: 0.65rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.packet-layer-header:hover,
+.packet-layer-header:focus {
+  background: rgba(255, 202, 103, 0.08);
+  outline: none;
+}
+
+.packet-layer-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  color: #f6faff;
+  font-size: 0.78rem;
+  line-height: 1.2;
+}
+
+.packet-layer-subtitle {
+  color: #ffc966;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.packet-layer-caret {
+  display: inline-grid;
+  width: 0.8rem;
+  color: #9fb3cc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  line-height: 1;
+}
+
+.packet-layer-body {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0 0.65rem 0.65rem;
+}
+
+.packet-layer-body[hidden] {
+  display: none;
+}
+
+.packet-layer-grid {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.72fr) minmax(0, 1fr);
+  gap: 0.32rem 0.7rem;
+  margin: 0;
+}
+
+.packet-layer-grid dt {
+  color: #9fb3cc;
+  font-size: 0.7rem;
+}
+
+.packet-layer-grid dd {
+  margin: 0;
+  color: #d7e8ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
 .timeline-detail-section pre {
   max-height: 12rem;
   margin: 0;
@@ -672,6 +815,10 @@ button.ghost {
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.timeline-detail-section .packet-payload-data {
+  max-height: 8rem;
 }
 
 @media (max-width: 1100px) {

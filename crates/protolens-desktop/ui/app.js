@@ -160,6 +160,123 @@ function layerDetail(packet) {
   ].join(" | ");
 }
 
+function detailValue(value) {
+  if (value === null || value === undefined || value === "") return "unknown";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  return String(value);
+}
+
+function appendDetailRow(list, label, value) {
+  const term = document.createElement("dt");
+  const description = document.createElement("dd");
+  term.textContent = label;
+  description.textContent = detailValue(value);
+  list.append(term, description);
+}
+
+function createLayerSection(title, subtitle, rows) {
+  const section = document.createElement("section");
+  section.className = "packet-layer-section collapsed";
+
+  const header = document.createElement("button");
+  header.type = "button";
+  header.className = "packet-layer-header";
+  header.setAttribute("aria-expanded", "false");
+
+  const titleElement = document.createElement("span");
+  titleElement.className = "packet-layer-title";
+  titleElement.textContent = title;
+  const caret = document.createElement("span");
+  caret.className = "packet-layer-caret";
+  caret.textContent = ">";
+  titleElement.prepend(caret);
+  header.append(titleElement);
+
+  if (subtitle) {
+    const subtitleElement = document.createElement("span");
+    subtitleElement.className = "packet-layer-subtitle";
+    subtitleElement.textContent = subtitle;
+    header.append(subtitleElement);
+  }
+
+  const list = document.createElement("dl");
+  list.className = "packet-layer-grid";
+  for (const [label, value] of rows) {
+    appendDetailRow(list, label, value);
+  }
+
+  const body = document.createElement("div");
+  body.className = "packet-layer-body";
+  body.hidden = true;
+  body.append(list);
+
+  header.addEventListener("click", () => {
+    const collapsed = section.classList.toggle("collapsed");
+    body.hidden = collapsed;
+    header.setAttribute("aria-expanded", String(!collapsed));
+    caret.textContent = collapsed ? ">" : "v";
+  });
+
+  section.append(header, body);
+  return section;
+}
+
+function createPayloadSection(payload) {
+  const payloadPreview = payload?.preview || "No UTF-8 preview";
+  const payloadSection = createLayerSection("Payload", payload ? `${payload.original_len} B` : "0 B", [
+    ["Original Length", payload ? `${payload.original_len} B` : "0 B"],
+    ["Encoding", payload?.encoding],
+    ["Truncated", payload?.truncated ?? false],
+    ["UTF-8 Preview", payloadPreview],
+  ]);
+  const dataBlock = document.createElement("pre");
+  dataBlock.className = "packet-payload-data";
+  dataBlock.textContent = payload?.data || "No payload bytes captured";
+  payloadSection.querySelector(".packet-layer-body").append(dataBlock);
+  return payloadSection;
+}
+
+function renderLayerSections(container, item, flags) {
+  container.replaceChildren();
+
+  if (!item.packet) {
+    const empty = document.createElement("div");
+    empty.className = "timeline-empty compact";
+    empty.textContent = "No parsed layer metadata";
+    container.append(empty, createPayloadSection(item.payload));
+    return;
+  }
+
+  const packet = item.packet;
+  const flow = item.kind.flow;
+  const payload = item.payload;
+
+  container.append(
+    createLayerSection("L2 Link", protocolName(packet.link.medium), [
+      ["Medium", packet.link.medium],
+      ["Encapsulated Protocol", packet.link.protocol],
+      ["Header Length", `${packet.link.header_len} B`],
+      ["Frame Length", `${packet.link.frame_len} B`],
+    ]),
+    createLayerSection("L3 Network", protocolName(packet.network.protocol), [
+      ["Protocol", packet.network.protocol],
+      ["Header Length", `${packet.network.header_len} B`],
+      ["Packet Length", `${packet.network.packet_len} B`],
+      ["TTL / Hop Limit", packet.network.hop_limit],
+    ]),
+    createLayerSection("L4 Transport", protocolName(packet.transport.protocol), [
+      ["Protocol", protocolName(packet.transport.protocol)],
+      ["Source", flow ? endpoint(flow.source) : null],
+      ["Destination", flow ? endpoint(flow.destination) : null],
+      ["Header Length", `${packet.transport.header_len} B`],
+      ["Segment Length", `${packet.transport.segment_len} B`],
+      ["TCP Flags", flags],
+    ]),
+  );
+
+  container.append(createPayloadSection(payload));
+}
+
 function linkKey(flow) {
   if (!flow) return null;
   const endpoints = [flow.source, flow.destination].sort((left, right) =>
@@ -747,7 +864,6 @@ function renderTimelineDetail(item) {
     return;
   }
 
-  const flow = item.kind.flow;
   const flags = item.tcp ? tcpFlags(item.tcp) : "none";
   const preview = item.payload?.preview ?? "";
   const rawJson = JSON.stringify(item.raw, null, 2);
@@ -755,9 +871,15 @@ function renderTimelineDetail(item) {
   const detail = document.createElement("div");
   detail.className = "timeline-detail-content";
   detail.innerHTML = `
-    <div>
-      <p class="timeline-detail-kicker"></p>
-      <h3 class="timeline-detail-title"></h3>
+    <div class="timeline-detail-heading">
+      <div>
+        <p class="timeline-detail-kicker"></p>
+        <h3 class="timeline-detail-title"></h3>
+      </div>
+      <button class="raw-event-button" type="button">Raw</button>
+      <div class="raw-event-popover" hidden>
+        <pre class="detail-raw"></pre>
+      </div>
     </div>
     <dl class="timeline-detail-grid">
       <dt>Direction</dt>
@@ -773,15 +895,11 @@ function renderTimelineDetail(item) {
     </dl>
     <div class="timeline-detail-section">
       <p class="timeline-detail-section-title">Layers</p>
-      <pre class="detail-layers"></pre>
+      <div class="detail-layers packet-layer-list"></div>
     </div>
     <div class="timeline-detail-section">
       <p class="timeline-detail-section-title">Preview</p>
       <pre class="detail-preview"></pre>
-    </div>
-    <div class="timeline-detail-section">
-      <p class="timeline-detail-section-title">Raw Event</p>
-      <pre class="detail-raw"></pre>
     </div>
   `;
 
@@ -792,9 +910,14 @@ function renderTimelineDetail(item) {
   detail.querySelector(".detail-phase").textContent = item.tcpPhaseGroup ?? "Other";
   detail.querySelector(".detail-flags").textContent = flags;
   detail.querySelector(".detail-payload").textContent = payloadLabel(item.payload);
-  detail.querySelector(".detail-layers").textContent = layerDetail(item.packet);
+  renderLayerSections(detail.querySelector(".detail-layers"), item, flags);
   detail.querySelector(".detail-preview").textContent = preview || "No UTF-8 preview";
   detail.querySelector(".detail-raw").textContent = rawJson;
+  const rawButton = detail.querySelector(".raw-event-button");
+  const rawPopover = detail.querySelector(".raw-event-popover");
+  rawButton.addEventListener("click", () => {
+    rawPopover.hidden = !rawPopover.hidden;
+  });
   timelinePacketDetail.append(detail);
 }
 
