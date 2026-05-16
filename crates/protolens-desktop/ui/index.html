@@ -69,7 +69,19 @@
             <p class="eyebrow">Live Events</p>
             <h2>Packets and DNS observations</h2>
           </div>
-          <button id="clearButton" class="ghost">Clear</button>
+          <div class="toolbar-actions">
+            <button id="timelineButton" class="icon-button ghost" type="button" title="Packet timeline" aria-label="Packet timeline">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5v14" />
+                <path d="M20 5v14" />
+                <path d="M7 8h10" />
+                <path d="m14 5 3 3-3 3" />
+                <path d="M17 16H7" />
+                <path d="m10 13-3 3 3 3" />
+              </svg>
+            </button>
+            <button id="clearButton" class="ghost">Clear</button>
+          </div>
         </div>
 
         <div class="result-layout">
@@ -88,6 +100,28 @@
         </div>
       </section>
     </main>
+
+    <div id="timelineModal" class="modal-backdrop" hidden>
+      <section class="timeline-modal" role="dialog" aria-modal="true" aria-labelledby="timelineTitle">
+        <header class="modal-header">
+          <div>
+            <p class="eyebrow">Packet Timeline</p>
+            <h2 id="timelineTitle">Sequence view</h2>
+          </div>
+          <button id="timelineCloseButton" class="icon-button ghost" type="button" title="Close" aria-label="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12" />
+              <path d="M18 6 6 18" />
+            </svg>
+          </button>
+        </header>
+        <div id="timelineMeta" class="timeline-meta"></div>
+        <div class="timeline-body">
+          <div id="timelineChart" class="timeline-chart"></div>
+          <aside id="timelinePacketList" class="timeline-packet-list"></aside>
+        </div>
+      </section>
+    </div>
 
     <script src="app.js"></script>
   </body>

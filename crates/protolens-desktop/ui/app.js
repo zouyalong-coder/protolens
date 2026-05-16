@@ -14,6 +14,13 @@ const loadPcapPathButton = document.querySelector("#loadPcapPathButton");
 const loadPcapButton = document.querySelector("#loadPcapButton");
 const refreshButton = document.querySelector("#refreshButton");
 const clearButton = document.querySelector("#clearButton");
+const timelineButton = document.querySelector("#timelineButton");
+const timelineModal = document.querySelector("#timelineModal");
+const timelineCloseButton = document.querySelector("#timelineCloseButton");
+const timelineTitle = document.querySelector("#timelineTitle");
+const timelineMeta = document.querySelector("#timelineMeta");
+const timelineChart = document.querySelector("#timelineChart");
+const timelinePacketList = document.querySelector("#timelinePacketList");
 const linkSelect = document.querySelector("#linkSelect");
 const linkCount = document.querySelector("#linkCount");
 const statusText = document.querySelector("#status");
@@ -31,11 +38,18 @@ let needsLinkRender = false;
 let needsEventRender = false;
 let virtualScrollScheduled = false;
 let currentVirtualState = null;
+let timelineItems = [];
+let selectedTimelineSequence = null;
 
 const VIRTUAL_EVENT_THRESHOLD = 1_200;
 const VIRTUAL_OVERSCAN_PX = 900;
 const ESTIMATED_EVENT_HEIGHT = 122;
 const ESTIMATED_GROUP_HEIGHT = 42;
+const MAX_TIMELINE_PACKETS = 300;
+const TIMELINE_LANE_GAP = 220;
+const TIMELINE_TOP = 72;
+const TIMELINE_ROW_HEIGHT = 36;
+const TIMELINE_PHASE_HEIGHT = 34;
 
 function setRunning(running) {
   startButton.disabled = running;
@@ -100,6 +114,14 @@ function packetLabel(tcp, payload) {
 function payloadLabel(payload) {
   if (!payload) return "payload 0B";
   return `payload ${payload.original_len}B${payload.truncated ? " truncated" : ""}`;
+}
+
+function escapeSvgText(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function protocolName(value) {
@@ -656,6 +678,228 @@ function clearEvents() {
   linkCount.textContent = "0";
 }
 
+function timelinePackets() {
+  return capturedEvents
+    .filter(eventVisible)
+    .filter((item) => item.kind.type === "interface_packet" && item.kind.flow)
+    .sort((left, right) => left.timestamp - right.timestamp || left.sequence - right.sequence);
+}
+
+function timelineContextLabel() {
+  if (selectedProtocolView) {
+    return `${selectedProtocolView.layer} ${selectedProtocolView.protocol}`;
+  }
+
+  if (selectedLinkKey) {
+    return selectedLinkKey.replace("<->", " <-> ");
+  }
+
+  return "All visible packets";
+}
+
+function packetTimelineLabel(item) {
+  const transport = item.protocols.find((protocol) => protocol.layer === "L4")?.protocol ?? "PACKET";
+  const base = item.tcp ? packetLabel(item.tcp, item.payload) : transport;
+  const payload = item.payload?.original_len ? ` ${item.payload.original_len}B` : "";
+  return `${base}${payload}`;
+}
+
+function timelineLaneKey(endpointValue) {
+  return endpoint(endpointValue);
+}
+
+function selectTimelinePacket(sequence) {
+  selectedTimelineSequence = sequence;
+
+  for (const element of timelineChart.querySelectorAll(".timeline-packet")) {
+    element.classList.toggle("selected", Number(element.dataset.sequence) === sequence);
+  }
+
+  for (const element of timelinePacketList.querySelectorAll(".timeline-packet-item")) {
+    const selected = Number(element.dataset.sequence) === sequence;
+    element.classList.toggle("selected", selected);
+    if (selected) {
+      timelinePacketList.scrollTo({
+        top: element.offsetTop - timelinePacketList.clientHeight / 2 + element.clientHeight / 2,
+        behavior: "auto",
+      });
+    }
+  }
+}
+
+function renderTimelinePacketList(items) {
+  const fragment = document.createDocumentFragment();
+
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "timeline-packet-item";
+    button.dataset.sequence = String(item.sequence);
+    button.innerHTML = `
+      <span class="timeline-packet-item-title"></span>
+      <span class="timeline-packet-item-meta"></span>
+    `;
+    button.querySelector(".timeline-packet-item-title").textContent = packetTimelineLabel(item);
+    button.querySelector(".timeline-packet-item-meta").textContent =
+      `#${item.sequence} ${endpoint(item.kind.flow.source)} -> ${endpoint(item.kind.flow.destination)}`;
+    button.addEventListener("click", () => selectTimelinePacket(item.sequence));
+    fragment.append(button);
+  }
+
+  timelinePacketList.replaceChildren(fragment);
+}
+
+function timelineHasTcpPhases(items) {
+  return items.some((item) => item.protocols.some((protocol) => protocol.layer === "L4" && protocol.protocol === "TCP"));
+}
+
+function createTimelineRows(items) {
+  if (!timelineHasTcpPhases(items)) {
+    return items.map((item) => ({ type: "packet", item }));
+  }
+
+  const phaseOrder = ["Handshake", "Transfer", "Teardown", "Reset", "Other"];
+  const groups = new Map();
+  let currentPhase = "Handshake";
+  for (const item of items) {
+    let phase = item.tcpPhaseGroup ?? "Other";
+    if (phase === "Control") {
+      phase = currentPhase;
+    } else if (phase !== "Other") {
+      currentPhase = phase;
+    }
+
+    if (!groups.has(phase)) groups.set(phase, []);
+    groups.get(phase).push(item);
+  }
+
+  const rows = [];
+  for (const phase of phaseOrder) {
+    const phaseItems = groups.get(phase);
+    if (!phaseItems?.length) continue;
+    rows.push({ type: "phase", phase, items: phaseItems });
+    for (const item of phaseItems) {
+      rows.push({ type: "packet", item });
+    }
+  }
+
+  return rows;
+}
+
+function renderTimelineChart(items) {
+  timelineTitle.textContent = timelineContextLabel();
+  timelineChart.replaceChildren();
+  timelinePacketList.replaceChildren();
+  selectedTimelineSequence = null;
+
+  if (!items.length) {
+    timelineMeta.textContent = "No packets in the current view.";
+    timelineChart.innerHTML = `<div class="timeline-empty">No packet flow to draw.</div>`;
+    timelinePacketList.innerHTML = `<div class="timeline-empty compact">No packets</div>`;
+    return;
+  }
+
+  const shown = items.slice(0, MAX_TIMELINE_PACKETS);
+  const timelineRows = createTimelineRows(shown);
+  timelineItems = shown;
+  const lanes = [];
+  const laneIndexes = new Map();
+  for (const item of shown) {
+    for (const value of [item.kind.flow.source, item.kind.flow.destination]) {
+      const key = timelineLaneKey(value);
+      if (!laneIndexes.has(key)) {
+        laneIndexes.set(key, lanes.length);
+        lanes.push(key);
+      }
+    }
+  }
+
+  const width = Math.max(760, 120 + Math.max(1, lanes.length - 1) * TIMELINE_LANE_GAP + 120);
+  const height =
+    TIMELINE_TOP +
+    timelineRows.reduce(
+      (total, row) => total + (row.type === "phase" ? TIMELINE_PHASE_HEIGHT : TIMELINE_ROW_HEIGHT),
+      0,
+    ) +
+    54;
+  const firstTimestamp = shown[0].timestamp;
+  const lastTimestamp = shown[shown.length - 1].timestamp;
+  const duration = Math.max(0, lastTimestamp - firstTimestamp);
+  const laneX = (lane) => 70 + lane * TIMELINE_LANE_GAP;
+  const labelY = 28;
+  let svg = `<svg class="timeline-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Packet timeline">`;
+
+  svg += `<defs><marker id="timelineArrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" /></marker></defs>`;
+
+  lanes.forEach((lane, index) => {
+    const x = laneX(index);
+    svg += `<line class="timeline-lane" x1="${x}" y1="46" x2="${x}" y2="${height - 24}" />`;
+    svg += `<text class="timeline-lane-label" x="${x}" y="${labelY}" text-anchor="middle">${escapeSvgText(lane)}</text>`;
+  });
+
+  let currentY = TIMELINE_TOP;
+  timelineRows.forEach((row) => {
+    if (row.type === "phase") {
+      const count = row.items.length;
+      const payloadBytes = row.items.reduce((total, item) => total + (item.payload?.original_len ?? 0), 0);
+      svg += `<rect class="timeline-phase-band" x="0" y="${currentY - 19}" width="${width}" height="${TIMELINE_PHASE_HEIGHT}" />`;
+      svg += `<text class="timeline-phase-title" x="12" y="${currentY + 3}">${escapeSvgText(row.phase)}</text>`;
+      svg += `<text class="timeline-phase-meta" x="${width - 12}" y="${currentY + 3}" text-anchor="end">${count} packets, ${payloadBytes}B</text>`;
+      currentY += TIMELINE_PHASE_HEIGHT;
+      return;
+    }
+
+    const item = row.item;
+    const sourceIndex = laneIndexes.get(timelineLaneKey(item.kind.flow.source));
+    const destinationIndex = laneIndexes.get(timelineLaneKey(item.kind.flow.destination));
+    const x1 = laneX(sourceIndex);
+    const x2 = laneX(destinationIndex);
+    const y = currentY;
+    const labelX = x1 === x2 ? x1 + 16 : (x1 + x2) / 2;
+    const labelAnchor = x1 === x2 ? "start" : "middle";
+    const elapsed = item.timestamp - firstTimestamp;
+    const label = packetTimelineLabel(item);
+
+    svg += `<g class="timeline-packet" data-sequence="${item.sequence}" tabindex="0" role="button" aria-label="${escapeSvgText(label)}">`;
+    svg += `<rect class="timeline-hit-area" x="0" y="${y - TIMELINE_ROW_HEIGHT / 2}" width="${width}" height="${TIMELINE_ROW_HEIGHT}" />`;
+    svg += `<text class="timeline-time" x="12" y="${y + 4}">+${elapsed}ms</text>`;
+    svg += `<line class="timeline-arrow timeline-hit-line" x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" />`;
+    svg += `<line class="timeline-arrow" x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" marker-end="url(#timelineArrow)" />`;
+    svg += `<circle class="timeline-point" cx="${x1}" cy="${y}" r="3" />`;
+    svg += `<text class="timeline-packet-label" x="${labelX}" y="${y - 7}" text-anchor="${labelAnchor}">${escapeSvgText(label)}</text>`;
+    svg += `</g>`;
+    currentY += TIMELINE_ROW_HEIGHT;
+  });
+
+  svg += `</svg>`;
+  timelineMeta.textContent =
+    `Showing ${shown.length} of ${items.length} packets across ${lanes.length} endpoints over ${duration}ms.`;
+  timelineChart.innerHTML = svg;
+  renderTimelinePacketList(shown);
+  timelineChart.querySelectorAll(".timeline-packet").forEach((element) => {
+    element.addEventListener("click", () => selectTimelinePacket(Number(element.dataset.sequence)));
+    element.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectTimelinePacket(Number(element.dataset.sequence));
+      }
+    });
+  });
+  selectTimelinePacket(shown[0].sequence);
+}
+
+function openTimeline() {
+  renderTimelineChart(timelinePackets());
+  timelineModal.hidden = false;
+  timelineCloseButton.focus();
+}
+
+function closeTimeline() {
+  timelineModal.hidden = true;
+  timelineItems = [];
+  selectedTimelineSequence = null;
+}
+
 async function loadInterfaces() {
   setStatus("Loading interfaces...");
   try {
@@ -756,6 +1000,14 @@ loadPcapPathButton.addEventListener("click", chooseLoadPcapPath);
 loadPcapButton.addEventListener("click", loadPcap);
 refreshButton.addEventListener("click", loadInterfaces);
 clearButton.addEventListener("click", clearEvents);
+timelineButton.addEventListener("click", openTimeline);
+timelineCloseButton.addEventListener("click", closeTimeline);
+timelineModal.addEventListener("click", (event) => {
+  if (event.target === timelineModal) closeTimeline();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !timelineModal.hidden) closeTimeline();
+});
 linkSelect.addEventListener("change", () => selectLink(linkSelect.value || null));
 events.addEventListener("scroll", () => {
   if (!currentVirtualState || virtualScrollScheduled) return;
