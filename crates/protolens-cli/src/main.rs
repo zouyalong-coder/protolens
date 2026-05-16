@@ -3,6 +3,7 @@ use protolens_capture::CaptureInterface;
 use protolens_controller::{CaptureRunConfig, capture_interfaces};
 use protolens_core::{Error, EventSink, Result};
 use protolens_output::{FormattedEventSink, LinkEventSink};
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -50,6 +51,27 @@ enum Command {
         /// 示例：--link-filter 10.0.0.2、--link-filter :443、--link-filter 10.0.0.2:443。
         #[arg(long)]
         link_filter: Vec<String>,
+
+        /// 同步保存原始抓包为 pcap 文件，可用 Wireshark 打开。
+        #[arg(long)]
+        pcap_out: Option<PathBuf>,
+    },
+    /// 从 pcap 文件回放事件，用于离线调试。
+    Replay {
+        /// pcap 文件路径。
+        file: PathBuf,
+
+        /// 单个 packet payload 最多保留的原始字节数。
+        #[arg(long, default_value_t = 4096)]
+        payload_limit: usize,
+
+        /// 输出视图：events 为逐事件输出，links 为按 TCP 链路聚合输出。
+        #[arg(long, value_enum, default_value = "events")]
+        view: CaptureView,
+
+        /// 只输出匹配端点的 link；仅影响 --view links，可重复指定。
+        #[arg(long)]
+        link_filter: Vec<String>,
     },
 }
 
@@ -79,12 +101,46 @@ fn main() -> Result<()> {
             payload_limit,
             view,
             link_filter,
+            pcap_out,
         } => {
-            let config = CaptureRunConfig::pcap(interface, filter, count, payload_limit);
+            let config = CaptureRunConfig::pcap(interface, filter, count, payload_limit, pcap_out);
 
             run_capture(config, view, link_filter)?;
         }
+        Command::Replay {
+            file,
+            payload_limit,
+            view,
+            link_filter,
+        } => {
+            replay_capture(file, payload_limit, view, link_filter)?;
+        }
     }
+
+    Ok(())
+}
+
+/// 从 pcap 文件回放并将事件写入格式化输出 sink。
+fn replay_capture(
+    file: PathBuf,
+    payload_limit: usize,
+    view: CaptureView,
+    link_filter: Vec<String>,
+) -> Result<()> {
+    let stdout = std::io::stdout();
+    let stdout = stdout.lock();
+    let mut sink: Box<dyn EventSink + '_> = match view {
+        CaptureView::Events => Box::new(FormattedEventSink::new(stdout)),
+        CaptureView::Links => Box::new(LinkEventSink::new_with_filters(stdout, link_filter)),
+    };
+
+    let count = protolens_controller::replay_pcap_file(file, payload_limit, |event| {
+        sink.write(&event)?;
+        sink.flush()?;
+        Ok(())
+    })?;
+
+    eprintln!("[protolens] replay emitted {count} events");
 
     Ok(())
 }

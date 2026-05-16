@@ -9,6 +9,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-width: 900px;
@@ -100,7 +104,8 @@ select:focus {
 
 .field-grid,
 .button-row,
-.toolbar {
+.toolbar,
+.file-tools {
   display: grid;
   gap: 0.85rem;
 }
@@ -112,6 +117,11 @@ select:focus {
 .button-row,
 .toolbar {
   grid-template-columns: 1fr auto;
+  align-items: end;
+}
+
+.file-tools {
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
 }
 
@@ -170,6 +180,18 @@ button.ghost {
   justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 0.7rem;
+}
+
+.link-count {
+  border: 1px solid rgba(134, 194, 255, 0.26);
+  border-radius: 999px;
+  padding: 0.18rem 0.5rem;
+  color: #86c2ff;
+  font-size: 0.75rem;
+}
+
+.link-select {
+  margin-bottom: 0.85rem;
 }
 
 .link-filter {

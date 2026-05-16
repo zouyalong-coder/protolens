@@ -4,8 +4,11 @@
 //! should translate UI/CLI input into these APIs instead of duplicating capture
 //! loops or shelling out to another binary.
 
-use protolens_capture::{CaptureInterface, PcapSource, PcapSourceConfig, list_interfaces};
+use protolens_capture::{
+    CaptureInterface, PcapFileSource, PcapSource, PcapSourceConfig, list_interfaces,
+};
 use protolens_core::{CaptureEvent, CaptureEventKind, PacketSource, Result};
+use std::path::PathBuf;
 
 /// Runtime capture options shared by CLI and desktop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,12 +26,14 @@ impl CaptureRunConfig {
         filter: String,
         count: Option<usize>,
         payload_limit: usize,
+        output_path: Option<PathBuf>,
     ) -> Self {
         Self {
             source: PcapSourceConfig {
                 interface,
                 filter: Some(filter),
                 payload_limit: Some(payload_limit),
+                output_path,
                 ..PcapSourceConfig::default()
             },
             count,
@@ -72,4 +77,20 @@ where
     }
 
     Ok(())
+}
+
+/// Replay a pcap file through the same event model used by live capture.
+pub fn replay_pcap_file<F>(path: PathBuf, payload_limit: usize, mut on_event: F) -> Result<usize>
+where
+    F: FnMut(CaptureEvent) -> Result<()>,
+{
+    let mut source = PcapFileSource::new(path, Some(payload_limit))?;
+    let mut emitted_events = 0usize;
+
+    while let Some(event) = source.next_event()? {
+        on_event(event)?;
+        emitted_events += 1;
+    }
+
+    Ok(emitted_events)
 }

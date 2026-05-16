@@ -3,13 +3,14 @@
 //! 当前 crate 先提供 pcap 网卡抓包能力，并把 packet 归一化成 core crate
 //! 定义的 `CaptureEvent`。后续显式代理、TUN、文件回放也应该放在这一层。
 
-use pcap::{Active, Capture, Linktype};
+use pcap::{Active, Capture, Linktype, Offline, Savefile};
 use protolens_core::{
     CaptureEvent, CaptureEventKind, DnsResolution, Endpoint, Error, FlowKey, PacketSource, Payload,
     Result, TcpSegmentMeta, TransportProtocol,
 };
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// 可用于抓包的系统网卡信息。
@@ -69,6 +70,8 @@ pub struct PcapSourceConfig {
     pub read_timeout_ms: i32,
     /// 每个 packet payload 最多保存的字节数。
     pub payload_limit: Option<usize>,
+    /// 可选 pcap 文件输出路径，用于 Wireshark 等工具离线打开。
+    pub output_path: Option<PathBuf>,
 }
 
 impl Default for PcapSourceConfig {
@@ -81,6 +84,7 @@ impl Default for PcapSourceConfig {
             promiscuous: false,
             read_timeout_ms: 1_000,
             payload_limit: Some(4_096),
+            output_path: None,
         }
     }
 }
@@ -96,6 +100,8 @@ pub struct PcapSource {
     emitted_started: bool,
     /// payload 截断限制。
     payload_limit: Option<usize>,
+    /// 可选 pcap savefile。保存的是原始链路层 packet，不受 payload_limit 影响。
+    savefile: Option<Savefile>,
 }
 
 impl PcapSource {
@@ -123,6 +129,14 @@ impl PcapSource {
         }
 
         let linktype = capture.get_datalink();
+        let savefile = match &config.output_path {
+            Some(path) => Some(
+                capture
+                    .savefile(path)
+                    .map_err(map_pcap_error("failed to create pcap output file"))?,
+            ),
+            None => None,
+        };
 
         Ok(Self {
             id: format!("pcap:{}", config.interface),
@@ -130,6 +144,37 @@ impl PcapSource {
             linktype,
             emitted_started: false,
             payload_limit: config.payload_limit,
+            savefile,
+        })
+    }
+}
+
+pub struct PcapFileSource {
+    /// 事件来源标识。
+    id: String,
+    /// 离线 pcap capture handle。
+    capture: Capture<Offline>,
+    /// pcap 文件中的链路层类型。
+    linktype: Linktype,
+    /// 用于确保只发送一次 `capture_started`。
+    emitted_started: bool,
+    /// payload 截断限制。
+    payload_limit: Option<usize>,
+}
+
+impl PcapFileSource {
+    /// 打开一个 pcap 文件作为离线回放源。
+    pub fn new(path: PathBuf, payload_limit: Option<usize>) -> Result<Self> {
+        let capture =
+            Capture::from_file(&path).map_err(map_pcap_error("failed to open pcap file"))?;
+        let linktype = capture.get_datalink();
+
+        Ok(Self {
+            id: format!("pcap-file:{}", path.display()),
+            capture,
+            linktype,
+            emitted_started: false,
+            payload_limit,
         })
     }
 }
@@ -158,31 +203,63 @@ impl PacketSource for PcapSource {
                 Err(error) => return Err(map_pcap_error("failed to read pcap packet")(error)),
             };
 
-            // DNS 响应用于维护 IP -> 域名展示缓存，TCP packet 仍然是主要输出事件。
-            let timestamp = packet_timestamp_millis(packet.header);
-            let dns_resolutions = parse_dns_resolutions(self.linktype, packet.data);
-            if !dns_resolutions.is_empty() {
-                return Ok(Some(CaptureEvent {
-                    timestamp,
-                    source_id: self.id.clone(),
-                    kind: CaptureEventKind::DnsResolved {
-                        resolutions: dns_resolutions,
-                    },
-                }));
+            if let Some(savefile) = self.savefile.as_mut() {
+                savefile.write(&packet);
             }
 
-            let parsed = parse_tcp_packet(self.linktype, packet.data, self.payload_limit);
+            if let Some(event) = event_from_packet(
+                self.linktype,
+                packet_timestamp_millis(packet.header),
+                &self.id,
+                packet.data,
+                self.payload_limit,
+            ) {
+                return Ok(Some(event));
+            }
+        }
+    }
+}
 
-            if let Some((flow, tcp, payload)) = parsed {
-                return Ok(Some(CaptureEvent {
-                    timestamp,
-                    source_id: self.id.clone(),
-                    kind: CaptureEventKind::InterfacePacket {
-                        flow: Some(flow),
-                        tcp: Some(tcp),
-                        payload,
-                    },
-                }));
+impl Drop for PcapSource {
+    fn drop(&mut self) {
+        if let Some(savefile) = self.savefile.as_mut() {
+            let _ = savefile.flush();
+        }
+    }
+}
+
+impl PacketSource for PcapFileSource {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn next_event(&mut self) -> Result<Option<CaptureEvent>> {
+        if !self.emitted_started {
+            self.emitted_started = true;
+            return Ok(Some(CaptureEvent {
+                timestamp: current_time_millis(),
+                source_id: self.id.clone(),
+                kind: CaptureEventKind::CaptureStarted {
+                    mode: "pcap_file".to_owned(),
+                },
+            }));
+        }
+
+        loop {
+            let packet = match self.capture.next_packet() {
+                Ok(packet) => packet,
+                Err(pcap::Error::NoMorePackets) => return Ok(None),
+                Err(error) => return Err(map_pcap_error("failed to read pcap file packet")(error)),
+            };
+
+            if let Some(event) = event_from_packet(
+                self.linktype,
+                packet_timestamp_millis(packet.header),
+                &self.id,
+                packet.data,
+                self.payload_limit,
+            ) {
+                return Ok(Some(event));
             }
         }
     }
@@ -227,6 +304,38 @@ fn map_pcap_error(context: &'static str) -> impl FnOnce(pcap::Error) -> Error {
         source_id: "pcap".to_owned(),
         message: format!("{context}: {error}"),
     }
+}
+
+/// 从原始 pcap packet 生成 ProtoLens 事件。
+fn event_from_packet(
+    linktype: Linktype,
+    timestamp: u64,
+    source_id: &str,
+    packet: &[u8],
+    payload_limit: Option<usize>,
+) -> Option<CaptureEvent> {
+    // DNS 响应用于维护 IP -> 域名展示缓存，TCP packet 仍然是主要输出事件。
+    let dns_resolutions = parse_dns_resolutions(linktype, packet);
+    if !dns_resolutions.is_empty() {
+        return Some(CaptureEvent {
+            timestamp,
+            source_id: source_id.to_owned(),
+            kind: CaptureEventKind::DnsResolved {
+                resolutions: dns_resolutions,
+            },
+        });
+    }
+
+    let (flow, tcp, payload) = parse_tcp_packet(linktype, packet, payload_limit)?;
+    Some(CaptureEvent {
+        timestamp,
+        source_id: source_id.to_owned(),
+        kind: CaptureEventKind::InterfacePacket {
+            flow: Some(flow),
+            tcp: Some(tcp),
+            payload,
+        },
+    })
 }
 
 /// 根据链路层类型剥离链路层头，并尝试解析 TCP packet。

@@ -5,11 +5,17 @@ const interfaceSelect = document.querySelector("#interfaceSelect");
 const filterInput = document.querySelector("#filterInput");
 const payloadLimitInput = document.querySelector("#payloadLimitInput");
 const countInput = document.querySelector("#countInput");
+const pcapOutputInput = document.querySelector("#pcapOutputInput");
+const pcapLoadInput = document.querySelector("#pcapLoadInput");
 const startButton = document.querySelector("#startButton");
 const stopButton = document.querySelector("#stopButton");
+const savePcapPathButton = document.querySelector("#savePcapPathButton");
+const loadPcapPathButton = document.querySelector("#loadPcapPathButton");
+const loadPcapButton = document.querySelector("#loadPcapButton");
 const refreshButton = document.querySelector("#refreshButton");
 const clearButton = document.querySelector("#clearButton");
-const allLinksButton = document.querySelector("#allLinksButton");
+const linkSelect = document.querySelector("#linkSelect");
+const linkCount = document.querySelector("#linkCount");
 const statusText = document.querySelector("#status");
 const events = document.querySelector("#events");
 const links = document.querySelector("#links");
@@ -21,6 +27,9 @@ const linkStates = new Map();
 function setRunning(running) {
   startButton.disabled = running;
   stopButton.disabled = !running;
+  savePcapPathButton.disabled = running;
+  loadPcapPathButton.disabled = running;
+  loadPcapButton.disabled = running;
 }
 
 function setStatus(message) {
@@ -30,6 +39,24 @@ function setStatus(message) {
 function endpoint(value) {
   if (!value) return "unknown";
   return `${value.address}:${value.port}`;
+}
+
+function normalizeType(value) {
+  if (!value) return value;
+  return value
+    .replace(/-/g, "_")
+    .replace(/[A-Z]/g, (letter, index) => `${index === 0 ? "" : "_"}${letter.toLowerCase()}`);
+}
+
+function eventKind(event) {
+  const kind = event.kind ?? {};
+  if (kind.type) return { ...kind, type: normalizeType(kind.type) };
+
+  const variant = Object.keys(kind)[0];
+  if (!variant) return kind;
+
+  const type = normalizeType(variant);
+  return { type, ...kind[variant] };
 }
 
 function endpointSortKey(value) {
@@ -48,11 +75,19 @@ function getLinkState(flow) {
   const key = linkKey(flow);
   if (!key) return null;
 
+  const endpoints = [flow.source, flow.destination].sort((left, right) =>
+    endpointSortKey(left).localeCompare(endpointSortKey(right)),
+  );
+
   if (!linkStates.has(key)) {
     linkStates.set(key, {
       key,
-      firstSource: endpoint(flow.source),
-      firstDestination: endpoint(flow.destination),
+      left: endpoint(endpoints[0]),
+      right: endpoint(endpoints[1]),
+      leftToRightPackets: 0,
+      rightToLeftPackets: 0,
+      leftToRightBytes: 0,
+      rightToLeftBytes: 0,
       packets: 0,
       bytes: 0,
     });
@@ -65,33 +100,54 @@ function updateLink(flow, payload) {
   const state = getLinkState(flow);
   if (!state) return null;
 
+  const size = payload?.original_len ?? 0;
   state.packets += 1;
-  state.bytes += payload?.original_len ?? 0;
+  state.bytes += size;
+
+  if (endpoint(flow.source) === state.left) {
+    state.leftToRightPackets += 1;
+    state.leftToRightBytes += size;
+  } else {
+    state.rightToLeftPackets += 1;
+    state.rightToLeftBytes += size;
+  }
+
   renderLinks();
   return state.key;
 }
 
 function renderLinks() {
   const sorted = [...linkStates.values()].sort((left, right) => right.packets - left.packets);
+  const previousValue = linkSelect.value;
+  linkSelect.replaceChildren(new Option("All links", ""));
   links.replaceChildren();
+  linkCount.textContent = String(sorted.length);
 
   for (const link of sorted) {
+    const option = new Option(`${link.left} <-> ${link.right}`, link.key);
+    linkSelect.append(option);
+
     const button = document.createElement("button");
     button.className = `link-filter${selectedLinkKey === link.key ? " active" : ""}`;
     button.innerHTML = `
       <span class="link-filter-title"></span>
       <span class="link-filter-meta"></span>
     `;
-    button.querySelector(".link-filter-title").textContent = `${link.firstSource} -> ${link.firstDestination}`;
-    button.querySelector(".link-filter-meta").textContent = `${link.packets} packets, ${link.bytes} bytes`;
+    button.querySelector(".link-filter-title").textContent = `${link.left} <-> ${link.right}`;
+    button.querySelector(".link-filter-meta").textContent =
+      `${link.packets} packets, ${link.bytes} bytes | ` +
+      `${link.leftToRightPackets}/${link.leftToRightBytes}B -> | ` +
+      `<- ${link.rightToLeftPackets}/${link.rightToLeftBytes}B`;
     button.addEventListener("click", () => selectLink(link.key));
     links.append(button);
   }
+
+  linkSelect.value = selectedLinkKey && linkStates.has(selectedLinkKey) ? selectedLinkKey : previousValue;
 }
 
 function selectLink(key) {
   selectedLinkKey = key;
-  allLinksButton.classList.toggle("active", selectedLinkKey === null);
+  linkSelect.value = key ?? "";
 
   for (const row of events.children) {
     row.hidden = selectedLinkKey !== null && row.dataset.linkKey !== selectedLinkKey;
@@ -101,7 +157,7 @@ function selectLink(key) {
 }
 
 function summarizeEvent(event) {
-  const kind = event.kind;
+  const kind = eventKind(event);
 
   if (kind.type === "capture_started") {
     return { title: `Capture started (${kind.mode})`, detail: event.source_id };
@@ -136,9 +192,10 @@ function summarizeEvent(event) {
 
 function appendEvent(event) {
   eventCount += 1;
+  const kind = eventKind(event);
   const summary = summarizeEvent(event);
-  const flow = event.kind.type === "interface_packet" ? event.kind.flow : null;
-  const rowLinkKey = flow ? updateLink(flow, event.kind.payload) : "";
+  const flow = kind.type === "interface_packet" ? kind.flow : null;
+  const rowLinkKey = flow ? updateLink(flow, kind.payload) : "";
   const row = document.createElement("article");
   row.className = "event";
   row.dataset.linkKey = rowLinkKey || "";
@@ -146,7 +203,7 @@ function appendEvent(event) {
   row.innerHTML = `
     <div class="event-header">
       <span>#${eventCount} ${new Date(event.timestamp).toLocaleTimeString()}</span>
-      <span>${event.kind.type}</span>
+      <span>${kind.type}</span>
     </div>
     <div class="event-main"></div>
     <div class="event-detail"></div>
@@ -154,6 +211,16 @@ function appendEvent(event) {
   row.querySelector(".event-main").textContent = summary.title;
   row.querySelector(".event-detail").textContent = summary.detail;
   events.prepend(row);
+}
+
+function clearEvents() {
+  eventCount = 0;
+  selectedLinkKey = null;
+  linkStates.clear();
+  links.replaceChildren();
+  events.replaceChildren();
+  linkSelect.replaceChildren(new Option("All links", ""));
+  linkCount.textContent = "0";
 }
 
 async function loadInterfaces() {
@@ -187,10 +254,11 @@ async function startCapture() {
         filter: filterInput.value || "tcp or udp port 53",
         payloadLimit: Number.isFinite(payloadLimit) ? payloadLimit : 4096,
         count: Number.isFinite(count) ? count : null,
+        pcapOutputPath: pcapOutputInput.value.trim() || null,
       },
     });
     setRunning(true);
-    setStatus("Capture running");
+    setStatus(pcapOutputInput.value.trim() ? `Capture running, saving ${pcapOutputInput.value.trim()}` : "Capture running");
   } catch (error) {
     setStatus(`Failed to start: ${error}`);
   }
@@ -201,18 +269,61 @@ async function stopCapture() {
   setStatus("Stopping capture...");
 }
 
+async function chooseSavePcapPath() {
+  try {
+    const path = await invoke("select_save_pcap_path");
+    if (path) {
+      pcapOutputInput.value = path;
+      setStatus(`Will save next capture to ${path}`);
+    }
+  } catch (error) {
+    setStatus(`Failed to choose save path: ${error}`);
+  }
+}
+
+async function chooseLoadPcapPath() {
+  try {
+    const path = await invoke("select_load_pcap_path");
+    if (path) {
+      pcapLoadInput.value = path;
+      setStatus(`Selected ${path}`);
+    }
+  } catch (error) {
+    setStatus(`Failed to choose pcap file: ${error}`);
+  }
+}
+
+async function loadPcap() {
+  const payloadLimit = Number.parseInt(payloadLimitInput.value, 10);
+  const path = pcapLoadInput.value.trim();
+  if (!path) {
+    setStatus("PCAP path is required");
+    return;
+  }
+
+  clearEvents();
+  setStatus("Loading pcap...");
+  try {
+    const count = await invoke("load_capture_file", {
+      request: {
+        path,
+        payloadLimit: Number.isFinite(payloadLimit) ? payloadLimit : 4096,
+      },
+    });
+    setStatus(`Loaded ${count} events from ${path}`);
+  } catch (error) {
+    setStatus(`Failed to load pcap: ${error}`);
+  }
+}
+
 startButton.addEventListener("click", startCapture);
 stopButton.addEventListener("click", stopCapture);
+savePcapPathButton.addEventListener("click", chooseSavePcapPath);
+loadPcapPathButton.addEventListener("click", chooseLoadPcapPath);
+loadPcapButton.addEventListener("click", loadPcap);
 refreshButton.addEventListener("click", loadInterfaces);
-clearButton.addEventListener("click", () => {
-  eventCount = 0;
-  selectedLinkKey = null;
-  linkStates.clear();
-  links.replaceChildren();
-  events.replaceChildren();
-  allLinksButton.classList.add("active");
-});
-allLinksButton.addEventListener("click", () => selectLink(null));
+clearButton.addEventListener("click", clearEvents);
+linkSelect.addEventListener("change", () => selectLink(linkSelect.value || null));
 
 listen("capture-event", (event) => appendEvent(event.payload));
 listen("capture-error", (event) => {

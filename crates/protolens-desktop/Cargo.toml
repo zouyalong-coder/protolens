@@ -11,6 +11,7 @@ protolens-controller.workspace = true
 protolens-core.workspace = true
 serde.workspace = true
 tauri.workspace = true
+tauri-plugin-dialog.workspace = true
 
 [build-dependencies]
 tauri-build.workspace = true

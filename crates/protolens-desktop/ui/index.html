@@ -41,6 +41,24 @@
           <button id="stopButton" class="secondary" disabled>Stop</button>
         </div>
 
+        <div class="file-tools">
+          <label>
+            Save PCAP Path
+            <input id="pcapOutputInput" placeholder="Choose a .pcap path" spellcheck="false" />
+          </label>
+          <button id="savePcapPathButton" class="secondary">Save as...</button>
+        </div>
+
+        <div class="file-tools">
+          <label>
+            Load PCAP Path
+            <input id="pcapLoadInput" placeholder="Choose a .pcap file" spellcheck="false" />
+          </label>
+          <button id="loadPcapPathButton" class="secondary">Open...</button>
+        </div>
+
+        <button id="loadPcapButton" class="ghost">Load selected PCAP</button>
+
         <button id="refreshButton" class="ghost">Refresh interfaces</button>
         <p id="status" class="status">Ready</p>
       </section>
@@ -58,8 +76,11 @@
           <aside class="links-panel">
             <div class="links-panel-header">
               <p class="eyebrow">Links</p>
-              <button id="allLinksButton" class="link-filter active">All</button>
+              <span id="linkCount" class="link-count">0</span>
             </div>
+            <select id="linkSelect" class="link-select">
+              <option value="">All links</option>
+            </select>
             <div id="links" class="links"></div>
           </aside>
 
