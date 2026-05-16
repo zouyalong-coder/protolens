@@ -159,6 +159,20 @@ button.ghost {
   padding-right: 0.4rem;
 }
 
+.events.virtual-events {
+  display: block;
+}
+
+.events.virtual-events .event,
+.events.virtual-events .event-group {
+  margin-bottom: 0.65rem;
+}
+
+.event-spacer {
+  width: 1px;
+  pointer-events: none;
+}
+
 .result-layout {
   display: grid;
   grid-template-columns: minmax(220px, 24%) minmax(0, 1fr);
@@ -225,6 +239,41 @@ button.ghost {
   font-size: 0.75rem;
 }
 
+.protocol-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
+  margin-top: 0.5rem;
+}
+
+.protocol-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  border: 1px solid rgba(134, 194, 255, 0.22);
+  border-radius: 999px;
+  padding: 0.16rem 0.45rem;
+  background: rgba(134, 194, 255, 0.08);
+  color: #b9dcff;
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.protocol-chip:hover,
+.protocol-chip:focus {
+  border-color: rgba(105, 183, 255, 0.66);
+  background: rgba(105, 183, 255, 0.18);
+  outline: none;
+}
+
+.protocol-chip.active {
+  border-color: rgba(255, 202, 103, 0.76);
+  background: rgba(255, 202, 103, 0.18);
+  color: #ffe0a6;
+}
+
 .event {
   display: grid;
   gap: 0.35rem;
@@ -232,6 +281,32 @@ button.ghost {
   border-radius: 0.65rem;
   padding: 0.9rem 1rem;
   background: rgba(255, 255, 255, 0.055);
+}
+
+.event-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.35rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.35rem 0.1rem 0.55rem;
+}
+
+.event-group:first-child {
+  margin-top: 0;
+}
+
+.event-group-title {
+  color: #ffe0a6;
+  font-size: 0.86rem;
+  font-weight: 850;
+}
+
+.event-group-meta {
+  color: #9fb3cc;
+  font-size: 0.74rem;
+  white-space: nowrap;
 }
 
 .event-header {

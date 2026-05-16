@@ -22,7 +22,19 @@ const links = document.querySelector("#links");
 
 let eventCount = 0;
 let selectedLinkKey = null;
+let selectedProtocolView = null;
 const linkStates = new Map();
+const capturedEvents = [];
+let renderScheduled = false;
+let needsLinkRender = false;
+let needsEventRender = false;
+let virtualScrollScheduled = false;
+let currentVirtualState = null;
+
+const VIRTUAL_EVENT_THRESHOLD = 1_200;
+const VIRTUAL_OVERSCAN_PX = 900;
+const ESTIMATED_EVENT_HEIGHT = 122;
+const ESTIMATED_GROUP_HEIGHT = 42;
 
 function setRunning(running) {
   startButton.disabled = running;
@@ -89,6 +101,27 @@ function payloadLabel(payload) {
   return `payload ${payload.original_len}B${payload.truncated ? " truncated" : ""}`;
 }
 
+function protocolName(value) {
+  if (!value) return "unknown";
+  if (typeof value === "string") return normalizeType(value).toUpperCase();
+  return normalizeType(String(value)).toUpperCase();
+}
+
+function linkProtocols(packet) {
+  if (!packet) return [];
+
+  const linkProtocol = packet.link.protocol ? protocolName(packet.link.protocol) : null;
+  const linkLabel = linkProtocol
+    ? `${protocolName(packet.link.medium)} / ${linkProtocol}`
+    : protocolName(packet.link.medium);
+
+  return [
+    { layer: "L2", protocol: linkLabel },
+    { layer: "L3", protocol: protocolName(packet.network.protocol) },
+    { layer: "L4", protocol: protocolName(packet.transport.protocol) },
+  ];
+}
+
 function layerDetail(packet) {
   if (!packet) return "layers=unknown";
 
@@ -122,17 +155,10 @@ function orderedFlow(flow) {
   };
 }
 
-function insertEventChronologically(row) {
-  const timestamp = Number(row.dataset.timestamp);
-
-  for (const existing of events.children) {
-    if (timestamp < Number(existing.dataset.timestamp)) {
-      events.insertBefore(row, existing);
-      return;
-    }
-  }
-
-  events.append(row);
+function timestampMillis(value) {
+  if (typeof value === "number") return value;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getLinkState(flow) {
@@ -157,13 +183,18 @@ function getLinkState(flow) {
       client: null,
       server: null,
       phase: "observing",
+      protocols: {
+        L2: new Set(),
+        L3: new Set(),
+        L4: new Set(),
+      },
     });
   }
 
   return linkStates.get(key);
 }
 
-function updateLink(flow, tcp, payload) {
+function updateLink(flow, tcp, payload, protocols) {
   const state = getLinkState(flow);
   if (!state) return null;
 
@@ -177,6 +208,10 @@ function updateLink(flow, tcp, payload) {
   } else {
     state.rightToLeftPackets += 1;
     state.rightToLeftBytes += size;
+  }
+
+  for (const item of protocols) {
+    state.protocols[item.layer].add(item.protocol);
   }
 
   if (tcp?.syn && !tcp.ack) {
@@ -197,49 +232,146 @@ function updateLink(flow, tcp, payload) {
     state.phase = "data";
   }
 
-  renderLinks();
   return state.key;
+}
+
+function protocolItems(link) {
+  return Object.entries(link.protocols).flatMap(([layer, values]) =>
+    [...values].sort().map((protocol) => ({ layer, protocol })),
+  );
+}
+
+function isProtocolViewActive(linkKey, layer, protocol) {
+  return (
+    selectedProtocolView?.linkKey === linkKey &&
+    selectedProtocolView.layer === layer &&
+    selectedProtocolView.protocol === protocol
+  );
 }
 
 function renderLinks() {
   const sorted = [...linkStates.values()].sort((left, right) => right.packets - left.packets);
   const previousValue = linkSelect.value;
-  linkSelect.replaceChildren(new Option("All links", ""));
-  links.replaceChildren();
+  const optionFragment = document.createDocumentFragment();
+  const linkFragment = document.createDocumentFragment();
+  optionFragment.append(new Option("All links", ""));
   linkCount.textContent = String(sorted.length);
 
   for (const link of sorted) {
     const title = link.client && link.server ? `${link.client} -> ${link.server}` : `${link.left} <-> ${link.right}`;
     const option = new Option(title, link.key);
-    linkSelect.append(option);
+    optionFragment.append(option);
 
     const button = document.createElement("button");
     button.className = `link-filter${selectedLinkKey === link.key ? " active" : ""}`;
     button.innerHTML = `
       <span class="link-filter-title"></span>
+      <span class="protocol-stack"></span>
       <span class="link-filter-meta"></span>
     `;
     button.querySelector(".link-filter-title").textContent = title;
+    const protocolStack = button.querySelector(".protocol-stack");
+    for (const item of protocolItems(link)) {
+      const protocolButton = document.createElement("span");
+      protocolButton.role = "button";
+      protocolButton.tabIndex = 0;
+      protocolButton.className =
+        `protocol-chip${isProtocolViewActive(link.key, item.layer, item.protocol) ? " active" : ""}`;
+      protocolButton.textContent = `${item.layer} ${item.protocol}`;
+      protocolButton.title = `Group this link by ${item.layer} ${item.protocol}`;
+      protocolButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        selectProtocolView(link.key, item.layer, item.protocol);
+      });
+      protocolButton.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.stopPropagation();
+          selectProtocolView(link.key, item.layer, item.protocol);
+        }
+      });
+      protocolStack.append(protocolButton);
+    }
     button.querySelector(".link-filter-meta").textContent =
       `${link.phase} | ${link.packets} packets, ${link.bytes} bytes | ` +
       `${link.leftToRightPackets}/${link.leftToRightBytes}B -> | ` +
       `<- ${link.rightToLeftPackets}/${link.rightToLeftBytes}B`;
     button.addEventListener("click", () => selectLink(link.key));
-    links.append(button);
+    linkFragment.append(button);
   }
 
+  linkSelect.replaceChildren(optionFragment);
+  links.replaceChildren(linkFragment);
   linkSelect.value = selectedLinkKey && linkStates.has(selectedLinkKey) ? selectedLinkKey : previousValue;
 }
 
 function selectLink(key) {
   selectedLinkKey = key;
+  selectedProtocolView = null;
   linkSelect.value = key ?? "";
+  renderEvents();
+  renderLinks();
+}
 
-  for (const row of events.children) {
-    row.hidden = selectedLinkKey !== null && row.dataset.linkKey !== selectedLinkKey;
+function selectProtocolView(linkKey, layer, protocol) {
+  const wasActive = isProtocolViewActive(linkKey, layer, protocol);
+  selectedProtocolView = wasActive ? null : { linkKey, layer, protocol };
+  selectedLinkKey = linkKey;
+  linkSelect.value = linkKey;
+  renderEvents();
+  renderLinks();
+}
+
+function eventMatchesProtocol(item, view) {
+  if (!view) return true;
+  if (item.linkKey !== view.linkKey) return false;
+  return item.protocols.some(
+    (protocol) => protocol.layer === view.layer && protocol.protocol === view.protocol,
+  );
+}
+
+function eventVisible(item) {
+  if (selectedProtocolView) return eventMatchesProtocol(item, selectedProtocolView);
+  return selectedLinkKey === null || item.linkKey === selectedLinkKey;
+}
+
+function tcpPhaseGroup(tcp, payload) {
+  if (!tcp) return "Other";
+  if (tcp.rst) return "Reset";
+  if (tcp.syn) return "Handshake";
+  if (tcp.fin) return "Teardown";
+  if (payload?.original_len > 0) return "Transfer";
+  return "Control";
+}
+
+function protocolGroupName(item) {
+  if (!selectedProtocolView) return null;
+  if (selectedProtocolView.layer === "L4" && selectedProtocolView.protocol === "TCP") {
+    return item.tcpPhaseGroup;
   }
 
-  renderLinks();
+  return selectedProtocolView.protocol;
+}
+
+function groupDescription(group, items) {
+  if (selectedProtocolView?.layer === "L4" && selectedProtocolView.protocol === "TCP") {
+    const payloadBytes = items.reduce((total, item) => total + (item.payload?.original_len ?? 0), 0);
+    return `${items.length} packets, ${payloadBytes} payload bytes`;
+  }
+
+  return `${items.length} packets`;
+}
+
+function createGroupHeader(group, items) {
+  const header = document.createElement("section");
+  header.className = "event-group";
+  header.innerHTML = `
+    <div class="event-group-title"></div>
+    <div class="event-group-meta"></div>
+  `;
+  header.querySelector(".event-group-title").textContent = group;
+  header.querySelector(".event-group-meta").textContent = groupDescription(group, items);
+  return header;
 }
 
 function summarizeEvent(event) {
@@ -276,42 +408,218 @@ function summarizeEvent(event) {
   return { title: kind.type, detail: JSON.stringify(kind) };
 }
 
-function appendEvent(event) {
-  eventCount += 1;
-  const kind = eventKind(event);
-  const summary = summarizeEvent(event);
-  const flow = kind.type === "interface_packet" ? kind.flow : null;
-  const rowLinkKey = flow ? updateLink(flow, kind.tcp, kind.payload) : "";
+function createEventRow(item) {
   const row = document.createElement("article");
   row.className = "event";
-  row.dataset.linkKey = rowLinkKey || "";
-  row.dataset.timestamp = String(Date.parse(event.timestamp));
-  row.hidden = selectedLinkKey !== null && row.dataset.linkKey !== selectedLinkKey;
+  row.dataset.linkKey = item.linkKey || "";
+  row.dataset.timestamp = String(item.timestamp);
   row.innerHTML = `
     <div class="event-header">
-      <span>#${eventCount} ${new Date(event.timestamp).toLocaleTimeString()}</span>
-      <span>${kind.type}</span>
+      <span>#${item.sequence} ${new Date(item.timestamp).toLocaleTimeString()}</span>
+      <span>${item.kind.type}</span>
     </div>
     <div class="event-main"></div>
     <div class="event-tags"></div>
     <div class="event-detail"></div>
   `;
-  row.querySelector(".event-main").textContent = summary.title;
+  row.querySelector(".event-main").textContent = item.summary.title;
   const tags = row.querySelector(".event-tags");
-  for (const badge of summary.badges ?? []) {
+  for (const badge of item.summary.badges ?? []) {
     const tag = document.createElement("span");
     tag.className = "event-tag";
     tag.textContent = badge;
     tags.append(tag);
   }
-  row.querySelector(".event-detail").textContent = summary.detail;
-  insertEventChronologically(row);
+  row.querySelector(".event-detail").textContent = item.summary.detail;
+  return row;
+}
+
+function createEventRenderItems(visible) {
+  if (!selectedProtocolView) {
+    return visible.map((item) => ({ type: "event", item }));
+  }
+
+  const groups = new Map();
+  for (const item of visible) {
+    const group = protocolGroupName(item);
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(item);
+  }
+
+  const orderedGroups =
+    selectedProtocolView.layer === "L4" && selectedProtocolView.protocol === "TCP"
+      ? ["Handshake", "Transfer", "Teardown", "Reset", "Control", "Other"]
+      : [...groups.keys()];
+
+  const renderItems = [];
+  for (const group of orderedGroups) {
+    const items = groups.get(group);
+    if (!items?.length) continue;
+    renderItems.push({ type: "group", group, items });
+    for (const item of items) {
+      renderItems.push({ type: "event", item });
+    }
+  }
+
+  return renderItems;
+}
+
+function estimatedHeight(item) {
+  return item.type === "group" ? ESTIMATED_GROUP_HEIGHT : ESTIMATED_EVENT_HEIGHT;
+}
+
+function cumulativeHeights(renderItems) {
+  const offsets = [0];
+  for (const item of renderItems) {
+    offsets.push(offsets[offsets.length - 1] + estimatedHeight(item));
+  }
+  return offsets;
+}
+
+function firstOffsetIndex(offsets, value) {
+  let low = 0;
+  let high = offsets.length - 1;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (offsets[mid] < value) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  return low;
+}
+
+function createRenderNode(renderItem) {
+  if (renderItem.type === "group") {
+    return createGroupHeader(renderItem.group, renderItem.items);
+  }
+
+  return createEventRow(renderItem.item);
+}
+
+function createSpacer(height) {
+  const spacer = document.createElement("div");
+  spacer.className = "event-spacer";
+  spacer.style.height = `${Math.max(0, height)}px`;
+  return spacer;
+}
+
+function renderVirtualWindow() {
+  if (!currentVirtualState) return;
+
+  const { renderItems, offsets } = currentVirtualState;
+  const viewportTop = Math.max(0, events.scrollTop - VIRTUAL_OVERSCAN_PX);
+  const viewportBottom = events.scrollTop + events.clientHeight + VIRTUAL_OVERSCAN_PX;
+  const startIndex = Math.max(0, firstOffsetIndex(offsets, viewportTop) - 1);
+  const endIndex = Math.min(renderItems.length, firstOffsetIndex(offsets, viewportBottom) + 1);
+  const fragment = document.createDocumentFragment();
+
+  fragment.append(createSpacer(offsets[startIndex]));
+  for (let index = startIndex; index < endIndex; index += 1) {
+    fragment.append(createRenderNode(renderItems[index]));
+  }
+  fragment.append(createSpacer(offsets[offsets.length - 1] - offsets[endIndex]));
+
+  events.replaceChildren(fragment);
+}
+
+function renderFullEvents(renderItems) {
+  const fragment = document.createDocumentFragment();
+  for (const item of renderItems) {
+    fragment.append(createRenderNode(item));
+  }
+  events.replaceChildren(fragment);
+}
+
+function renderEvents() {
+  const previousScrollTop = events.scrollTop;
+  const visible = capturedEvents
+    .filter(eventVisible)
+    .sort((left, right) => left.timestamp - right.timestamp || left.sequence - right.sequence);
+  const renderItems = createEventRenderItems(visible);
+
+  if (renderItems.length < VIRTUAL_EVENT_THRESHOLD) {
+    currentVirtualState = null;
+    events.classList.remove("virtual-events");
+    renderFullEvents(renderItems);
+    events.scrollTop = previousScrollTop;
+    return;
+  }
+
+  events.classList.add("virtual-events");
+  currentVirtualState = {
+    renderItems,
+    offsets: cumulativeHeights(renderItems),
+  };
+  events.scrollTop = previousScrollTop;
+  renderVirtualWindow();
+}
+
+function scheduleRender({
+  links: shouldRenderLinks = false,
+  events: shouldRenderEvents = false,
+} = {}) {
+  needsLinkRender ||= shouldRenderLinks;
+  needsEventRender ||= shouldRenderEvents;
+  if (renderScheduled) return;
+
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+
+    if (needsLinkRender) {
+      needsLinkRender = false;
+      renderLinks();
+    }
+
+    if (needsEventRender) {
+      needsEventRender = false;
+      renderEvents();
+    }
+  });
+}
+
+function appendEvent(event) {
+  eventCount += 1;
+  const kind = eventKind(event);
+  const summary = summarizeEvent(event);
+  const flow = kind.type === "interface_packet" ? kind.flow : null;
+  const protocols = linkProtocols(kind.packet);
+  const rowLinkKey = flow ? updateLink(flow, kind.tcp, kind.payload, protocols) : "";
+  capturedEvents.push({
+    raw: event,
+    kind,
+    summary,
+    linkKey: rowLinkKey || "",
+    timestamp: timestampMillis(event.timestamp),
+    sequence: eventCount,
+    packet: kind.packet,
+    protocols,
+    tcp: kind.tcp,
+    payload: kind.payload,
+    tcpPhaseGroup: tcpPhaseGroup(kind.tcp, kind.payload),
+  });
+  scheduleRender({
+    links: Boolean(rowLinkKey),
+    events: eventVisible(capturedEvents[capturedEvents.length - 1]),
+  });
 }
 
 function clearEvents() {
   eventCount = 0;
   selectedLinkKey = null;
+  selectedProtocolView = null;
   linkStates.clear();
+  capturedEvents.length = 0;
+  renderScheduled = false;
+  needsLinkRender = false;
+  needsEventRender = false;
+  virtualScrollScheduled = false;
+  currentVirtualState = null;
+  events.classList.remove("virtual-events");
   links.replaceChildren();
   events.replaceChildren();
   linkSelect.replaceChildren(new Option("All links", ""));
@@ -419,6 +727,15 @@ loadPcapButton.addEventListener("click", loadPcap);
 refreshButton.addEventListener("click", loadInterfaces);
 clearButton.addEventListener("click", clearEvents);
 linkSelect.addEventListener("change", () => selectLink(linkSelect.value || null));
+events.addEventListener("scroll", () => {
+  if (!currentVirtualState || virtualScrollScheduled) return;
+
+  virtualScrollScheduled = true;
+  requestAnimationFrame(() => {
+    virtualScrollScheduled = false;
+    renderVirtualWindow();
+  });
+});
 
 listen("capture-event", (event) => appendEvent(event.payload));
 listen("capture-error", (event) => {
