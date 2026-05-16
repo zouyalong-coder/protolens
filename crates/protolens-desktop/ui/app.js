@@ -54,6 +54,8 @@ let captureStartSupportedPackets = 0;
 let captureStartUnsupportedPackets = 0;
 let supportedPacketCount = 0;
 let unsupportedPacketCount = 0;
+let lastSuggestedFilter = null;
+let filterEditedByUser = false;
 
 const VIRTUAL_EVENT_THRESHOLD = 1_200;
 const VIRTUAL_OVERSCAN_PX = 900;
@@ -1260,8 +1262,13 @@ async function diagnoseTarget({ apply = true } = {}) {
       renderInterfaceOptions(diagnosis.recommendedInterface);
       interfaceSelect.value = diagnosis.recommendedInterface;
     }
-    if (diagnosis.bpfFilter) {
+    const canApplyFilter =
+      diagnosis.bpfFilter &&
+      (!filterEditedByUser || !filterInput.value.trim() || filterInput.value === lastSuggestedFilter);
+    if (canApplyFilter) {
       filterInput.value = diagnosis.bpfFilter;
+      lastSuggestedFilter = diagnosis.bpfFilter;
+      filterEditedByUser = false;
     }
   }
 
@@ -1282,7 +1289,7 @@ async function startCapture() {
   setStatus("Starting capture...");
   try {
     if (targetInput.value.trim()) {
-      await diagnoseTarget();
+      await diagnoseTarget({ apply: false });
     }
 
     await invoke("start_capture", {
@@ -1379,6 +1386,9 @@ async function loadPcap() {
 
 startButton.addEventListener("click", startCapture);
 stopButton.addEventListener("click", stopCapture);
+filterInput.addEventListener("input", () => {
+  filterEditedByUser = filterInput.value !== lastSuggestedFilter;
+});
 diagnoseTargetButton.addEventListener("click", () => {
   diagnoseTarget().catch((error) => setStatus(`Failed to detect target: ${error}`));
 });

@@ -94,7 +94,7 @@ pub trait ProtocolAnalyzer {
 - `Links` 面板按双向 flow 聚合 packet，展示两端 endpoint、TCP phase、包数、payload bytes 和协议栈 chip。
 - `Links` 面板提供显示层过滤输入框，按空格拆分关键词并同时匹配 endpoint、端口、协议、phase 和统计文本；例如输入 `443` 可筛出任一端口包含 `443` 的 HTTPS/TLS/QUIC 相关 link。该过滤只影响 UI 列表，不替代抓包前的 BPF filter。
 - `Target` 输入框面向“抓这个网站”的使用模型：桌面端解析 URL/host/IP，推断默认端口，解析目标地址，并在 macOS 上通过 `route -n get <ip>` 推荐实际出站接口。
-- 目标诊断会识别 `198.18.0.0/15` 代理 fake-ip 场景，把 `utun*` 等 tunnel/VPN 接口标为推荐接口，并生成 `host <ip> and port <port>` BPF filter。
+- 目标诊断会识别 `198.18.0.0/15` 代理 fake-ip 场景，把 `utun*` 等 tunnel/VPN 接口标为推荐接口，并把 `host <ip> and port <port>` BPF filter 作为默认建议；用户手动修改 filter 后，Start 不应覆盖人工输入。
 - `L2 Link` 展示链路介质、封装协议、链路层 header 长度和 frame 长度。
 - `L3 Network` 展示 IP 协议、header 长度、packet 长度和 TTL/hop limit。
 - `L4 Transport` 展示传输协议、源/目标端点、header 长度、segment 长度和 TCP flags。

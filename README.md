@@ -103,7 +103,7 @@ cargo run -p protolens-cli -- capture --interface en0 --filter tcp --payload-lim
 - 解析目标 host 和端口，默认 HTTPS 使用 443，HTTP 使用 80。
 - 解析目标 IP，并在 macOS 上通过系统路由推荐接口，例如 `utun3`。
 - 识别 `198.18.0.0/15` 这类代理 fake-ip 场景，提示应抓取 tunnel/VPN 接口而不是 Wi-Fi。
-- 自动生成 BPF filter，例如 `host 198.18.1.11 and port 443`。
+- 将建议的 BPF filter 作为默认值填入，例如 `host 198.18.1.11 and port 443`；如果用户手动修改，最终以人工输入为准。
 - 抓包启动后区分没有 raw packet、只有 unsupported packet、以及已解析 packet 三种状态。
 
 ## 桌面端 packet 详情
