@@ -246,6 +246,22 @@ button.ghost {
   overflow-wrap: anywhere;
 }
 
+.event-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.event-tag {
+  border: 1px solid rgba(134, 194, 255, 0.22);
+  border-radius: 999px;
+  padding: 0.16rem 0.45rem;
+  background: rgba(134, 194, 255, 0.08);
+  color: #b8d7ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+}
+
 .event-detail {
   color: #9fb3cc;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

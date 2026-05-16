@@ -64,6 +64,54 @@ pub struct TcpSegmentMeta {
     pub urg: bool,
 }
 
+/// Link layer metadata extracted from the captured frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkLayerMeta {
+    /// Capture link-layer medium, for example `ethernet` or `loopback`.
+    pub medium: String,
+    /// Encapsulated protocol carried by the link layer, when known.
+    pub protocol: Option<String>,
+    /// Link-layer header length in bytes.
+    pub header_len: usize,
+    /// Captured frame length in bytes.
+    pub frame_len: usize,
+}
+
+/// Network layer metadata extracted from the packet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkLayerMeta {
+    /// Network-layer protocol, currently `ipv4` or `ipv6`.
+    pub protocol: String,
+    /// IP header length in bytes.
+    pub header_len: usize,
+    /// IP packet length in bytes.
+    pub packet_len: usize,
+    /// IPv4 TTL or IPv6 hop limit.
+    pub hop_limit: Option<u8>,
+}
+
+/// Transport layer metadata extracted from the segment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransportLayerMeta {
+    /// Transport protocol.
+    pub protocol: TransportProtocol,
+    /// Transport header length in bytes.
+    pub header_len: usize,
+    /// Transport segment length in bytes.
+    pub segment_len: usize,
+}
+
+/// Per-packet display metadata grouped by protocol layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PacketMeta {
+    /// Layer 2 metadata.
+    pub link: LinkLayerMeta,
+    /// Layer 3 metadata.
+    pub network: NetworkLayerMeta,
+    /// Layer 4 metadata.
+    pub transport: TransportLayerMeta,
+}
+
 impl TcpSegmentMeta {
     /// 从 TCP header flags byte 创建元信息。
     pub fn from_flags_byte(flags: u8) -> Self {
@@ -184,6 +232,8 @@ pub enum CaptureEventKind {
     },
     /// 网卡级 packet 事件。
     InterfacePacket {
+        /// Layered packet metadata for display and analysis.
+        packet: Option<PacketMeta>,
         /// 能解析出传输层信息时携带 flow。
         flow: Option<FlowKey>,
         /// TCP segment metadata；非 TCP packet 为空。

@@ -47,7 +47,9 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
                     event.timestamp
                 )?;
             }
-            CaptureEventKind::InterfacePacket { flow, tcp, payload } => {
+            CaptureEventKind::InterfacePacket {
+                flow, tcp, payload, ..
+            } => {
                 write!(self.writer, "[{}] packet", event.timestamp)?;
 
                 if let Some(flow) = flow {
@@ -194,6 +196,7 @@ impl<W: Write> EventSink for LinkEventSink<W> {
                 flow: Some(flow),
                 tcp: Some(tcp),
                 payload,
+                ..
             } => (flow, tcp, payload),
             _ => return Ok(()),
         };
@@ -639,6 +642,7 @@ mod tests {
             timestamp,
             source_id: "test".to_owned(),
             kind: CaptureEventKind::InterfacePacket {
+                packet: None,
                 flow: Some(flow),
                 tcp: Some(tcp),
                 payload,

@@ -5,8 +5,9 @@
 
 use pcap::{Active, Capture, Linktype, Offline, Savefile};
 use protolens_core::{
-    CaptureEvent, CaptureEventKind, DnsResolution, Endpoint, Error, FlowKey, PacketSource, Payload,
-    Result, TcpSegmentMeta, TransportProtocol,
+    CaptureEvent, CaptureEventKind, DnsResolution, Endpoint, Error, FlowKey, LinkLayerMeta,
+    NetworkLayerMeta, PacketMeta, PacketSource, Payload, Result, TcpSegmentMeta,
+    TransportLayerMeta, TransportProtocol,
 };
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -326,16 +327,40 @@ fn event_from_packet(
         });
     }
 
-    let (flow, tcp, payload) = parse_tcp_packet(linktype, packet, payload_limit)?;
+    let parsed = parse_tcp_packet(linktype, packet, payload_limit)?;
     Some(CaptureEvent {
         timestamp,
         source_id: source_id.to_owned(),
         kind: CaptureEventKind::InterfacePacket {
-            flow: Some(flow),
-            tcp: Some(tcp),
-            payload,
+            packet: Some(parsed.meta),
+            flow: Some(parsed.flow),
+            tcp: Some(parsed.tcp),
+            payload: parsed.payload,
         },
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedTcpPacket {
+    flow: FlowKey,
+    tcp: TcpSegmentMeta,
+    payload: Option<Payload>,
+    meta: PacketMeta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IpPacketView<'a> {
+    packet: &'a [u8],
+    link: LinkLayerMeta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedIpPacket {
+    flow: FlowKey,
+    tcp: TcpSegmentMeta,
+    payload: Option<Payload>,
+    network: NetworkLayerMeta,
+    transport: TransportLayerMeta,
 }
 
 /// 根据链路层类型剥离链路层头，并尝试解析 TCP packet。
@@ -343,23 +368,28 @@ fn parse_tcp_packet(
     linktype: Linktype,
     packet: &[u8],
     payload_limit: Option<usize>,
-) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
-    let ip_packet = match linktype {
-        Linktype::ETHERNET => ethernet_payload(packet)?,
-        Linktype::IPV4 | Linktype::IPV6 | Linktype::RAW => packet,
-        Linktype::NULL | Linktype::LOOP => loopback_payload(packet)?,
-        _ => return None,
-    };
+) -> Option<ParsedTcpPacket> {
+    let view = ip_packet_view(linktype, packet)?;
+    let parsed = parse_ip_packet(view.packet, payload_limit)?;
 
-    parse_ip_packet(ip_packet, payload_limit)
+    Some(ParsedTcpPacket {
+        flow: parsed.flow,
+        tcp: parsed.tcp,
+        payload: parsed.payload,
+        meta: PacketMeta {
+            link: view.link,
+            network: parsed.network,
+            transport: parsed.transport,
+        },
+    })
 }
 
 /// 根据链路层类型剥离链路层头，并尝试解析 DNS 响应里的 A/AAAA 记录。
 fn parse_dns_resolutions(linktype: Linktype, packet: &[u8]) -> Vec<DnsResolution> {
     let Some(ip_packet) = (match linktype {
-        Linktype::ETHERNET => ethernet_payload(packet),
+        Linktype::ETHERNET => ethernet_payload(packet).map(|view| view.packet),
         Linktype::IPV4 | Linktype::IPV6 | Linktype::RAW => Some(packet),
-        Linktype::NULL | Linktype::LOOP => loopback_payload(packet),
+        Linktype::NULL | Linktype::LOOP => loopback_payload(packet).map(|view| view.packet),
         _ => None,
     }) else {
         return Vec::new();
@@ -551,8 +581,8 @@ fn read_dns_name(message: &[u8], offset: &mut usize) -> Option<String> {
     (!labels.is_empty()).then(|| labels.join("."))
 }
 
-/// 解析 Ethernet frame，返回 IPv4/IPv6 payload。
-fn ethernet_payload(packet: &[u8]) -> Option<&[u8]> {
+/// 解析 Ethernet frame，返回 IPv4/IPv6 payload 和二层元数据。
+fn ethernet_payload(packet: &[u8]) -> Option<IpPacketView<'_>> {
     if packet.len() < 14 {
         return None;
     }
@@ -570,26 +600,72 @@ fn ethernet_payload(packet: &[u8]) -> Option<&[u8]> {
         ethertype = u16::from_be_bytes([packet[16], packet[17]]);
     }
 
+    let protocol = ethertype_name(ethertype)?;
+    Some(IpPacketView {
+        packet: &packet[offset..],
+        link: LinkLayerMeta {
+            medium: "ethernet".to_owned(),
+            protocol: Some(protocol.to_owned()),
+            header_len: offset,
+            frame_len: packet.len(),
+        },
+    })
+}
+
+fn ethertype_name(ethertype: u16) -> Option<&'static str> {
     match ethertype {
-        0x0800 | 0x86dd => Some(&packet[offset..]),
+        0x0800 => Some("ipv4"),
+        0x86dd => Some("ipv6"),
         _ => None,
     }
 }
 
-/// 解析 BSD/macOS loopback header，返回其后的 IP packet。
-fn loopback_payload(packet: &[u8]) -> Option<&[u8]> {
+/// 解析 BSD/macOS loopback header，返回其后的 IP packet 和二层元数据。
+fn loopback_payload(packet: &[u8]) -> Option<IpPacketView<'_>> {
     if packet.len() < 5 {
         return None;
     }
 
-    Some(&packet[4..])
+    let protocol = match packet[4] >> 4 {
+        4 => "ipv4",
+        6 => "ipv6",
+        _ => return None,
+    };
+
+    Some(IpPacketView {
+        packet: &packet[4..],
+        link: LinkLayerMeta {
+            medium: "loopback".to_owned(),
+            protocol: Some(protocol.to_owned()),
+            header_len: 4,
+            frame_len: packet.len(),
+        },
+    })
+}
+
+fn ip_packet_view(linktype: Linktype, packet: &[u8]) -> Option<IpPacketView<'_>> {
+    match linktype {
+        Linktype::ETHERNET => ethernet_payload(packet),
+        Linktype::IPV4 | Linktype::IPV6 | Linktype::RAW => Some(IpPacketView {
+            packet,
+            link: LinkLayerMeta {
+                medium: "raw".to_owned(),
+                protocol: packet.first().and_then(|byte| match byte >> 4 {
+                    4 => Some("ipv4".to_owned()),
+                    6 => Some("ipv6".to_owned()),
+                    _ => None,
+                }),
+                header_len: 0,
+                frame_len: packet.len(),
+            },
+        }),
+        Linktype::NULL | Linktype::LOOP => loopback_payload(packet),
+        _ => None,
+    }
 }
 
 /// 根据 IP version 分发到 IPv4 或 IPv6 TCP 解析。
-fn parse_ip_packet(
-    packet: &[u8],
-    payload_limit: Option<usize>,
-) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
+fn parse_ip_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<ParsedIpPacket> {
     match packet.first()? >> 4 {
         4 => parse_ipv4_tcp_packet(packet, payload_limit),
         6 => parse_ipv6_tcp_packet(packet, payload_limit),
@@ -598,10 +674,7 @@ fn parse_ip_packet(
 }
 
 /// 解析 IPv4 packet 中的 TCP segment。
-fn parse_ipv4_tcp_packet(
-    packet: &[u8],
-    payload_limit: Option<usize>,
-) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
+fn parse_ipv4_tcp_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<ParsedIpPacket> {
     if packet.len() < 20 {
         return None;
     }
@@ -623,21 +696,25 @@ fn parse_ipv4_tcp_packet(
         packet[16], packet[17], packet[18], packet[19],
     ));
 
-    parse_tcp_segment(
+    let mut parsed = parse_tcp_segment(
         &packet[header_len..total_len],
         source,
         destination,
         payload_limit,
-    )
+    )?;
+    parsed.network = NetworkLayerMeta {
+        protocol: "ipv4".to_owned(),
+        header_len,
+        packet_len: total_len,
+        hop_limit: Some(packet[8]),
+    };
+    Some(parsed)
 }
 
 /// 解析不带扩展头的 IPv6 TCP packet。
 ///
 /// IPv6 extension header 需要单独 walker；当前版本先跳过，避免误解析。
-fn parse_ipv6_tcp_packet(
-    packet: &[u8],
-    payload_limit: Option<usize>,
-) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
+fn parse_ipv6_tcp_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<ParsedIpPacket> {
     if packet.len() < 40 || packet[6] != 6 {
         return None;
     }
@@ -651,7 +728,14 @@ fn parse_ipv6_tcp_packet(
     let source = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&packet[8..24]).ok()?));
     let destination = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&packet[24..40]).ok()?));
 
-    parse_tcp_segment(&packet[40..total_len], source, destination, payload_limit)
+    let mut parsed = parse_tcp_segment(&packet[40..total_len], source, destination, payload_limit)?;
+    parsed.network = NetworkLayerMeta {
+        protocol: "ipv6".to_owned(),
+        header_len: 40,
+        packet_len: total_len,
+        hop_limit: Some(packet[7]),
+    };
+    Some(parsed)
 }
 
 /// 从 TCP segment 中提取 flow 和 payload。
@@ -660,7 +744,7 @@ fn parse_tcp_segment(
     source_address: IpAddr,
     destination_address: IpAddr,
     payload_limit: Option<usize>,
-) -> Option<(FlowKey, TcpSegmentMeta, Option<Payload>)> {
+) -> Option<ParsedIpPacket> {
     if segment.len() < 20 {
         return None;
     }
@@ -675,8 +759,8 @@ fn parse_tcp_segment(
     let payload = &segment[header_len..];
     let tcp = TcpSegmentMeta::from_flags_byte(segment[13]);
 
-    Some((
-        FlowKey {
+    Some(ParsedIpPacket {
+        flow: FlowKey {
             source: Endpoint {
                 address: source_address,
                 port: source_port,
@@ -688,8 +772,19 @@ fn parse_tcp_segment(
             transport: TransportProtocol::Tcp,
         },
         tcp,
-        (!payload.is_empty()).then(|| Payload::from_bytes(payload, payload_limit)),
-    ))
+        payload: (!payload.is_empty()).then(|| Payload::from_bytes(payload, payload_limit)),
+        network: NetworkLayerMeta {
+            protocol: "unknown".to_owned(),
+            header_len: 0,
+            packet_len: 0,
+            hop_limit: None,
+        },
+        transport: TransportLayerMeta {
+            protocol: TransportProtocol::Tcp,
+            header_len,
+            segment_len: segment.len(),
+        },
+    })
 }
 
 /// 将 pcap timeval 转成 Unix epoch 毫秒。
@@ -720,13 +815,16 @@ mod tests {
             0x50, 0x18, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
         ];
 
-        let (flow, tcp, payload) = parse_ip_packet(&packet, None).unwrap();
+        let parsed = parse_ip_packet(&packet, None).unwrap();
 
-        assert_eq!(flow.source.port, 12_345);
-        assert_eq!(flow.destination.port, 80);
-        assert!(tcp.psh);
-        assert!(tcp.ack);
-        assert_eq!(payload.unwrap().preview.as_deref(), Some("hello"));
+        assert_eq!(parsed.flow.source.port, 12_345);
+        assert_eq!(parsed.flow.destination.port, 80);
+        assert!(parsed.tcp.psh);
+        assert!(parsed.tcp.ack);
+        assert_eq!(parsed.payload.unwrap().preview.as_deref(), Some("hello"));
+        assert_eq!(parsed.network.protocol, "ipv4");
+        assert_eq!(parsed.network.header_len, 20);
+        assert_eq!(parsed.transport.header_len, 20);
     }
 
     #[test]

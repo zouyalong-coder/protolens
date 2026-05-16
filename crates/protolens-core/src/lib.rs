@@ -9,8 +9,8 @@ mod traits;
 
 pub use error::{Error, Result};
 pub use event::{
-    CaptureEvent, CaptureEventKind, Direction, DnsResolution, Endpoint, FlowKey, Payload,
-    PayloadEncoding, SessionEndReason, SessionMeta, TcpSegmentMeta, TimestampMillis,
-    TransportProtocol,
+    CaptureEvent, CaptureEventKind, Direction, DnsResolution, Endpoint, FlowKey, LinkLayerMeta,
+    NetworkLayerMeta, PacketMeta, Payload, PayloadEncoding, SessionEndReason, SessionMeta,
+    TcpSegmentMeta, TimestampMillis, TransportLayerMeta, TransportProtocol,
 };
 pub use traits::{AnalysisSink, EventSink, PacketSource, ProtocolAnalyzer};
