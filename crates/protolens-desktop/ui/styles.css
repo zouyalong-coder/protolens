@@ -106,6 +106,7 @@ select:focus {
 .field-grid,
 .button-row,
 .toolbar,
+.target-tools,
 .file-tools {
   display: grid;
   gap: 0.65rem;
@@ -130,6 +131,22 @@ select:focus {
 .file-tools {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
+}
+
+.target-tools {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.diagnosis {
+  margin: -0.2rem 0 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(122, 183, 255, 0.22);
+  border-radius: 0.55rem;
+  background: rgba(122, 183, 255, 0.08);
+  color: #bfd9f7;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 button {

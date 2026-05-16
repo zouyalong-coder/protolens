@@ -1,6 +1,9 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+const targetInput = document.querySelector("#targetInput");
+const diagnoseTargetButton = document.querySelector("#diagnoseTargetButton");
+const targetDiagnosis = document.querySelector("#targetDiagnosis");
 const interfaceSelect = document.querySelector("#interfaceSelect");
 const filterInput = document.querySelector("#filterInput");
 const payloadLimitInput = document.querySelector("#payloadLimitInput");
@@ -43,6 +46,14 @@ let currentVirtualState = null;
 let timelineItems = [];
 let timelineLaneIndexes = new Map();
 let selectedTimelineSequence = null;
+let knownInterfaces = [];
+let lastTargetDiagnosis = null;
+let noPacketTimer = null;
+let captureStartEventCount = 0;
+let captureStartSupportedPackets = 0;
+let captureStartUnsupportedPackets = 0;
+let supportedPacketCount = 0;
+let unsupportedPacketCount = 0;
 
 const VIRTUAL_EVENT_THRESHOLD = 1_200;
 const VIRTUAL_OVERSCAN_PX = 900;
@@ -57,6 +68,7 @@ const TIMELINE_PHASE_HEIGHT = 34;
 function setRunning(running) {
   startButton.disabled = running;
   stopButton.disabled = !running;
+  diagnoseTargetButton.disabled = running;
   savePcapPathButton.disabled = running;
   loadPcapPathButton.disabled = running;
   loadPcapButton.disabled = running;
@@ -64,6 +76,46 @@ function setRunning(running) {
 
 function setStatus(message) {
   statusText.textContent = message;
+}
+
+function setTargetDiagnosis(message) {
+  targetDiagnosis.hidden = !message;
+  targetDiagnosis.textContent = message || "";
+}
+
+function interfaceKind(item) {
+  const name = item.name.toLowerCase();
+  const description = (item.description || "").toLowerCase();
+  if (name.startsWith("utun") || name.includes("tun")) return "VPN/tunnel";
+  if (name === "lo0" || item.flags?.is_loopback) return "loopback";
+  if (item.flags?.is_wireless || name.startsWith("en") || description.includes("wi-fi")) return "network";
+  return "interface";
+}
+
+function renderInterfaceOptions(recommendedInterface = null) {
+  const selected = recommendedInterface || interfaceSelect.value;
+  interfaceSelect.replaceChildren();
+
+  const sorted = [...knownInterfaces].sort((left, right) => {
+    if (left.name === recommendedInterface) return -1;
+    if (right.name === recommendedInterface) return 1;
+    return left.name.localeCompare(right.name);
+  });
+
+  for (const item of sorted) {
+    const option = document.createElement("option");
+    const kind = interfaceKind(item);
+    const recommended = item.name === recommendedInterface ? "recommended, " : "";
+    option.value = item.name;
+    option.textContent = item.description
+      ? `${item.name} - ${recommended}${kind}, ${item.description}`
+      : `${item.name} - ${recommended}${kind}`;
+    interfaceSelect.append(option);
+  }
+
+  if (selected && [...interfaceSelect.options].some((option) => option.value === selected)) {
+    interfaceSelect.value = selected;
+  }
 }
 
 function endpoint(value) {
@@ -103,8 +155,9 @@ function tcpFlags(tcp) {
   );
 }
 
-function packetLabel(tcp, payload) {
-  if (!tcp) return "Packet";
+function packetLabel(tcp, payload, packet) {
+  const transport = normalizeType(packet?.transport?.protocol || "");
+  if (!tcp) return transport === "udp" ? "UDP datagram" : "Packet";
   if (tcp.rst) return "TCP RST";
   if (tcp.syn && tcp.ack) return "TCP SYN-ACK";
   if (tcp.syn) return "TCP SYN";
@@ -603,7 +656,7 @@ function summarizeEvent(event) {
     const flow = kind.flow;
     const payload = kind.payload;
     const flags = tcpFlags(kind.tcp);
-    const label = packetLabel(kind.tcp, payload);
+    const label = packetLabel(kind.tcp, payload, kind.packet);
     const flowDisplay = flow ? orderedFlow(flow) : null;
     const title = flowDisplay ? `${label}: ${flowDisplay.left} ${flowDisplay.arrow} ${flowDisplay.right}` : label;
     const preview = payload?.preview ? ` preview=${JSON.stringify(payload.preview)}` : "";
@@ -611,6 +664,14 @@ function summarizeEvent(event) {
       title,
       detail: `${layerDetail(kind.packet)} | flags=${flags} | ${payloadLabel(payload)}${preview}`,
       badges: [label, payloadLabel(payload), flags],
+    };
+  }
+
+  if (kind.type === "unsupported_packet") {
+    return {
+      title: `Unsupported packet: ${kind.link_type || "unknown link"}`,
+      detail: `${kind.reason || "not parsed"} | frame=${kind.frame_len ?? 0}B`,
+      badges: ["Unsupported", kind.link_type || "unknown"],
     };
   }
 
@@ -801,6 +862,8 @@ function scheduleRender({
 function appendEvent(event) {
   eventCount += 1;
   const kind = eventKind(event);
+  if (kind.type === "interface_packet") supportedPacketCount += 1;
+  if (kind.type === "unsupported_packet") unsupportedPacketCount += 1;
   const summary = summarizeEvent(event);
   const flow = kind.type === "interface_packet" ? kind.flow : null;
   const protocols = linkProtocols(kind.packet);
@@ -826,6 +889,8 @@ function appendEvent(event) {
 
 function clearEvents() {
   eventCount = 0;
+  supportedPacketCount = 0;
+  unsupportedPacketCount = 0;
   selectedLinkKey = null;
   selectedProtocolView = null;
   linkStates.clear();
@@ -865,7 +930,7 @@ function timelineContextLabel() {
 
 function packetTimelineLabel(item) {
   const transport = item.protocols.find((protocol) => protocol.layer === "L4")?.protocol ?? "PACKET";
-  const base = item.tcp ? packetLabel(item.tcp, item.payload) : transport;
+  const base = item.tcp ? packetLabel(item.tcp, item.payload, item.packet) : transport;
   const payload = item.payload?.original_len ? ` ${item.payload.original_len}B` : "";
   return `${base}${payload}`;
 }
@@ -1170,20 +1235,44 @@ function closeTimeline() {
 async function loadInterfaces() {
   setStatus("Loading interfaces...");
   try {
-    const interfaces = await invoke("list_interfaces");
-    interfaceSelect.replaceChildren();
-
-    for (const item of interfaces) {
-      const option = document.createElement("option");
-      option.value = item.name;
-      option.textContent = item.description ? `${item.name} - ${item.description}` : item.name;
-      interfaceSelect.append(option);
-    }
-
-    setStatus(interfaces.length ? `Loaded ${interfaces.length} interfaces` : "No interfaces found");
+    knownInterfaces = await invoke("list_interfaces");
+    renderInterfaceOptions(lastTargetDiagnosis?.recommendedInterface || null);
+    setStatus(knownInterfaces.length ? `Loaded ${knownInterfaces.length} interfaces` : "No interfaces found");
   } catch (error) {
     setStatus(`Failed to load interfaces: ${error}`);
   }
+}
+
+async function diagnoseTarget({ apply = true } = {}) {
+  const target = targetInput.value.trim();
+  if (!target) {
+    setTargetDiagnosis("");
+    lastTargetDiagnosis = null;
+    return null;
+  }
+
+  setStatus("Detecting target route...");
+  const diagnosis = await invoke("diagnose_target", { request: { target } });
+  lastTargetDiagnosis = diagnosis;
+
+  if (apply) {
+    if (diagnosis.recommendedInterface) {
+      renderInterfaceOptions(diagnosis.recommendedInterface);
+      interfaceSelect.value = diagnosis.recommendedInterface;
+    }
+    if (diagnosis.bpfFilter) {
+      filterInput.value = diagnosis.bpfFilter;
+    }
+  }
+
+  const route = diagnosis.recommendedInterface ? `route ${diagnosis.recommendedInterface}` : "route unknown";
+  const ip = diagnosis.selectedIp || diagnosis.resolvedIps?.[0] || "unresolved";
+  const fakeIp = diagnosis.fakeIp ? "proxy fake IP, " : "";
+  const filter = diagnosis.bpfFilter ? `filter ${diagnosis.bpfFilter}` : "no BPF suggestion";
+  setTargetDiagnosis(`${diagnosis.host}:${diagnosis.port} -> ${ip}; ${fakeIp}${route}; ${filter}`);
+  setStatus(diagnosis.recommendedInterface ? `Target route detected: ${diagnosis.recommendedInterface}` : "Target detected");
+
+  return diagnosis;
 }
 
 async function startCapture() {
@@ -1192,6 +1281,10 @@ async function startCapture() {
 
   setStatus("Starting capture...");
   try {
+    if (targetInput.value.trim()) {
+      await diagnoseTarget();
+    }
+
     await invoke("start_capture", {
       request: {
         interface: interfaceSelect.value,
@@ -1202,6 +1295,29 @@ async function startCapture() {
       },
     });
     setRunning(true);
+    captureStartEventCount = eventCount;
+    captureStartSupportedPackets = supportedPacketCount;
+    captureStartUnsupportedPackets = unsupportedPacketCount;
+    clearTimeout(noPacketTimer);
+    noPacketTimer = setTimeout(() => {
+      if (!stopButton.disabled && lastTargetDiagnosis) {
+        const supportedDelta = supportedPacketCount - captureStartSupportedPackets;
+        const unsupportedDelta = unsupportedPacketCount - captureStartUnsupportedPackets;
+        if (supportedDelta > 0) return;
+
+        const recommended = lastTargetDiagnosis.recommendedInterface;
+        const current = interfaceSelect.value;
+        let hint = "No raw packets arrived for this target filter; verify the interface, target IP, and BPF.";
+        if (unsupportedDelta > 0) {
+          hint = `${unsupportedDelta} raw packets arrived, but ProtoLens could not parse them yet. Check the unsupported packet rows for link type and reason.`;
+        } else if (eventCount !== captureStartEventCount) {
+          hint = "Only control or DNS events arrived; no target packet matched the current parser.";
+        } else if (recommended && recommended !== current) {
+          hint = `No raw packets yet. Target route uses ${recommended}; current interface is ${current}.`;
+        }
+        setTargetDiagnosis(`${targetDiagnosis.textContent} | ${hint}`);
+      }
+    }, 4000);
     setStatus(pcapOutputInput.value.trim() ? `Capture running, saving ${pcapOutputInput.value.trim()}` : "Capture running");
   } catch (error) {
     setStatus(`Failed to start: ${error}`);
@@ -1210,6 +1326,7 @@ async function startCapture() {
 
 async function stopCapture() {
   await invoke("stop_capture");
+  clearTimeout(noPacketTimer);
   setStatus("Stopping capture...");
 }
 
@@ -1262,6 +1379,9 @@ async function loadPcap() {
 
 startButton.addEventListener("click", startCapture);
 stopButton.addEventListener("click", stopCapture);
+diagnoseTargetButton.addEventListener("click", () => {
+  diagnoseTarget().catch((error) => setStatus(`Failed to detect target: ${error}`));
+});
 savePcapPathButton.addEventListener("click", chooseSavePcapPath);
 loadPcapPathButton.addEventListener("click", chooseLoadPcapPath);
 loadPcapButton.addEventListener("click", loadPcap);
@@ -1290,10 +1410,12 @@ events.addEventListener("scroll", () => {
 listen("capture-event", (event) => appendEvent(event.payload));
 listen("capture-error", (event) => {
   setRunning(false);
+  clearTimeout(noPacketTimer);
   setStatus(`Capture error: ${event.payload}`);
 });
 listen("capture-stopped", () => {
   setRunning(false);
+  clearTimeout(noPacketTimer);
   setStatus("Capture stopped");
 });
 

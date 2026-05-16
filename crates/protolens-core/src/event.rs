@@ -9,8 +9,10 @@ pub type TimestampMillis = u64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportProtocol {
-    /// 第一阶段只支持 TCP。
+    /// Transmission Control Protocol.
     Tcp,
+    /// User Datagram Protocol, including QUIC/HTTP3 traffic.
+    Udp,
 }
 
 /// 带端口的网络端点。
@@ -238,8 +240,18 @@ pub enum CaptureEventKind {
         flow: Option<FlowKey>,
         /// TCP segment metadata；非 TCP packet 为空。
         tcp: Option<TcpSegmentMeta>,
-        /// packet 中的 TCP payload；纯 ACK 等无负载 packet 为空。
+        /// packet 中的 transport payload；纯 ACK 等无负载 packet 为空。
         payload: Option<Payload>,
+    },
+    /// pcap did receive a raw frame, but ProtoLens could not parse it into a
+    /// supported packet event.
+    UnsupportedPacket {
+        /// Capture link-layer type reported by libpcap/Npcap.
+        link_type: String,
+        /// Captured frame length in bytes.
+        frame_len: usize,
+        /// Short reason for the parser skip.
+        reason: String,
     },
     /// 从 DNS 响应包中提取出的解析结果。
     DnsResolved {

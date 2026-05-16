@@ -64,7 +64,11 @@ where
 
     while should_continue() {
         if let Some(event) = source.next_event()? {
-            let is_packet = matches!(event.kind, CaptureEventKind::InterfacePacket { .. });
+            let is_packet = matches!(
+                event.kind,
+                CaptureEventKind::InterfacePacket { .. }
+                    | CaptureEventKind::UnsupportedPacket { .. }
+            );
             on_event(event)?;
 
             if is_packet {

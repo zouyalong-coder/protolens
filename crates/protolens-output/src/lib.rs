@@ -82,6 +82,17 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
                     )?;
                 }
             }
+            CaptureEventKind::UnsupportedPacket {
+                link_type,
+                frame_len,
+                reason,
+            } => {
+                writeln!(
+                    self.writer,
+                    "[{}] unsupported packet link_type={} frame={}B reason={}",
+                    event.timestamp, link_type, frame_len, reason
+                )?;
+            }
             CaptureEventKind::TcpSessionStarted { session } => {
                 writeln!(
                     self.writer,

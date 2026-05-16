@@ -15,6 +15,15 @@
           <p class="intro">Capture TCP packets with the same Rust controller used by the CLI.</p>
         </div>
 
+        <div class="target-tools">
+          <label>
+            Target
+            <input id="targetInput" placeholder="https://example.com" spellcheck="false" />
+          </label>
+          <button id="diagnoseTargetButton" class="secondary" type="button">Detect</button>
+        </div>
+        <p id="targetDiagnosis" class="diagnosis" hidden></p>
+
         <label>
           Interface
           <select id="interfaceSelect"></select>

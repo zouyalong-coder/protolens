@@ -208,15 +208,13 @@ impl PacketSource for PcapSource {
                 savefile.write(&packet);
             }
 
-            if let Some(event) = event_from_packet(
+            return Ok(Some(event_from_packet(
                 self.linktype,
                 packet_timestamp_millis(packet.header),
                 &self.id,
                 packet.data,
                 self.payload_limit,
-            ) {
-                return Ok(Some(event));
-            }
+            )));
         }
     }
 }
@@ -253,15 +251,13 @@ impl PacketSource for PcapFileSource {
                 Err(error) => return Err(map_pcap_error("failed to read pcap file packet")(error)),
             };
 
-            if let Some(event) = event_from_packet(
+            return Ok(Some(event_from_packet(
                 self.linktype,
                 packet_timestamp_millis(packet.header),
                 &self.id,
                 packet.data,
                 self.payload_limit,
-            ) {
-                return Ok(Some(event));
-            }
+            )));
         }
     }
 }
@@ -314,36 +310,47 @@ fn event_from_packet(
     source_id: &str,
     packet: &[u8],
     payload_limit: Option<usize>,
-) -> Option<CaptureEvent> {
+) -> CaptureEvent {
     // DNS 响应用于维护 IP -> 域名展示缓存，TCP packet 仍然是主要输出事件。
     let dns_resolutions = parse_dns_resolutions(linktype, packet);
     if !dns_resolutions.is_empty() {
-        return Some(CaptureEvent {
+        return CaptureEvent {
             timestamp,
             source_id: source_id.to_owned(),
             kind: CaptureEventKind::DnsResolved {
                 resolutions: dns_resolutions,
             },
-        });
+        };
     }
 
-    let parsed = parse_tcp_packet(linktype, packet, payload_limit)?;
-    Some(CaptureEvent {
+    if let Some(parsed) = parse_tcp_packet(linktype, packet, payload_limit) {
+        return CaptureEvent {
+            timestamp,
+            source_id: source_id.to_owned(),
+            kind: CaptureEventKind::InterfacePacket {
+                packet: Some(parsed.meta),
+                flow: Some(parsed.flow),
+                tcp: parsed.tcp,
+                payload: parsed.payload,
+            },
+        };
+    }
+
+    CaptureEvent {
         timestamp,
         source_id: source_id.to_owned(),
-        kind: CaptureEventKind::InterfacePacket {
-            packet: Some(parsed.meta),
-            flow: Some(parsed.flow),
-            tcp: Some(parsed.tcp),
-            payload: parsed.payload,
+        kind: CaptureEventKind::UnsupportedPacket {
+            link_type: format!("{linktype:?}"),
+            frame_len: packet.len(),
+            reason: unsupported_packet_reason(linktype, packet),
         },
-    })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedTcpPacket {
     flow: FlowKey,
-    tcp: TcpSegmentMeta,
+    tcp: Option<TcpSegmentMeta>,
     payload: Option<Payload>,
     meta: PacketMeta,
 }
@@ -357,7 +364,7 @@ struct IpPacketView<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedIpPacket {
     flow: FlowKey,
-    tcp: TcpSegmentMeta,
+    tcp: Option<TcpSegmentMeta>,
     payload: Option<Payload>,
     network: NetworkLayerMeta,
     transport: TransportLayerMeta,
@@ -382,6 +389,30 @@ fn parse_tcp_packet(
             transport: parsed.transport,
         },
     })
+}
+
+fn unsupported_packet_reason(linktype: Linktype, packet: &[u8]) -> String {
+    let Some(view) = ip_packet_view(linktype, packet) else {
+        return format!("unsupported link type {linktype:?} or link-layer frame");
+    };
+
+    match view.packet.first().map(|byte| byte >> 4) {
+        Some(4) => {
+            if view.packet.len() < 20 {
+                return "truncated ipv4 packet".to_owned();
+            }
+            let protocol = view.packet[9];
+            format!("unsupported ipv4 transport protocol {protocol}")
+        }
+        Some(6) => {
+            if view.packet.len() < 40 {
+                return "truncated ipv6 packet".to_owned();
+            }
+            let protocol = view.packet[6];
+            format!("unsupported ipv6 next header {protocol}")
+        }
+        _ => "unsupported network packet".to_owned(),
+    }
 }
 
 /// 根据链路层类型剥离链路层头，并尝试解析 DNS 响应里的 A/AAAA 记录。
@@ -673,14 +704,14 @@ fn parse_ip_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<Parsed
     }
 }
 
-/// 解析 IPv4 packet 中的 TCP segment。
+/// 解析 IPv4 packet 中的 TCP segment 或 UDP datagram。
 fn parse_ipv4_tcp_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<ParsedIpPacket> {
     if packet.len() < 20 {
         return None;
     }
 
     let header_len = usize::from(packet[0] & 0x0f) * 4;
-    if header_len < 20 || packet.len() < header_len || packet[9] != 6 {
+    if header_len < 20 || packet.len() < header_len {
         return None;
     }
 
@@ -696,12 +727,21 @@ fn parse_ipv4_tcp_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<
         packet[16], packet[17], packet[18], packet[19],
     ));
 
-    let mut parsed = parse_tcp_segment(
-        &packet[header_len..total_len],
-        source,
-        destination,
-        payload_limit,
-    )?;
+    let mut parsed = match packet[9] {
+        6 => parse_tcp_segment(
+            &packet[header_len..total_len],
+            source,
+            destination,
+            payload_limit,
+        )?,
+        17 => parse_udp_datagram(
+            &packet[header_len..total_len],
+            source,
+            destination,
+            payload_limit,
+        )?,
+        _ => return None,
+    };
     parsed.network = NetworkLayerMeta {
         protocol: "ipv4".to_owned(),
         header_len,
@@ -711,11 +751,11 @@ fn parse_ipv4_tcp_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<
     Some(parsed)
 }
 
-/// 解析不带扩展头的 IPv6 TCP packet。
+/// 解析不带扩展头的 IPv6 TCP packet 或 UDP datagram。
 ///
 /// IPv6 extension header 需要单独 walker；当前版本先跳过，避免误解析。
 fn parse_ipv6_tcp_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<ParsedIpPacket> {
-    if packet.len() < 40 || packet[6] != 6 {
+    if packet.len() < 40 {
         return None;
     }
 
@@ -728,7 +768,11 @@ fn parse_ipv6_tcp_packet(packet: &[u8], payload_limit: Option<usize>) -> Option<
     let source = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&packet[8..24]).ok()?));
     let destination = IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&packet[24..40]).ok()?));
 
-    let mut parsed = parse_tcp_segment(&packet[40..total_len], source, destination, payload_limit)?;
+    let mut parsed = match packet[6] {
+        6 => parse_tcp_segment(&packet[40..total_len], source, destination, payload_limit)?,
+        17 => parse_udp_datagram(&packet[40..total_len], source, destination, payload_limit)?,
+        _ => return None,
+    };
     parsed.network = NetworkLayerMeta {
         protocol: "ipv6".to_owned(),
         header_len: 40,
@@ -771,7 +815,7 @@ fn parse_tcp_segment(
             },
             transport: TransportProtocol::Tcp,
         },
-        tcp,
+        tcp: Some(tcp),
         payload: (!payload.is_empty()).then(|| Payload::from_bytes(payload, payload_limit)),
         network: NetworkLayerMeta {
             protocol: "unknown".to_owned(),
@@ -783,6 +827,54 @@ fn parse_tcp_segment(
             protocol: TransportProtocol::Tcp,
             header_len,
             segment_len: segment.len(),
+        },
+    })
+}
+
+/// 从 UDP datagram 中提取 flow 和 payload。
+fn parse_udp_datagram(
+    datagram: &[u8],
+    source_address: IpAddr,
+    destination_address: IpAddr,
+    payload_limit: Option<usize>,
+) -> Option<ParsedIpPacket> {
+    if datagram.len() < 8 {
+        return None;
+    }
+
+    let source_port = u16::from_be_bytes([datagram[0], datagram[1]]);
+    let destination_port = u16::from_be_bytes([datagram[2], datagram[3]]);
+    let datagram_len =
+        usize::from(u16::from_be_bytes([datagram[4], datagram[5]])).min(datagram.len());
+    if datagram_len < 8 {
+        return None;
+    }
+
+    let payload = &datagram[8..datagram_len];
+    Some(ParsedIpPacket {
+        flow: FlowKey {
+            source: Endpoint {
+                address: source_address,
+                port: source_port,
+            },
+            destination: Endpoint {
+                address: destination_address,
+                port: destination_port,
+            },
+            transport: TransportProtocol::Udp,
+        },
+        tcp: None,
+        payload: (!payload.is_empty()).then(|| Payload::from_bytes(payload, payload_limit)),
+        network: NetworkLayerMeta {
+            protocol: "unknown".to_owned(),
+            header_len: 0,
+            packet_len: 0,
+            hop_limit: None,
+        },
+        transport: TransportLayerMeta {
+            protocol: TransportProtocol::Udp,
+            header_len: 8,
+            segment_len: datagram_len,
         },
     })
 }
@@ -819,8 +911,9 @@ mod tests {
 
         assert_eq!(parsed.flow.source.port, 12_345);
         assert_eq!(parsed.flow.destination.port, 80);
-        assert!(parsed.tcp.psh);
-        assert!(parsed.tcp.ack);
+        let tcp = parsed.tcp.unwrap();
+        assert!(tcp.psh);
+        assert!(tcp.ack);
         assert_eq!(parsed.payload.unwrap().preview.as_deref(), Some("hello"));
         assert_eq!(parsed.network.protocol, "ipv4");
         assert_eq!(parsed.network.header_len, 20);
@@ -828,10 +921,28 @@ mod tests {
     }
 
     #[test]
-    fn skips_non_tcp_ipv4_packet() {
+    fn parses_ipv4_udp_packet() {
         let packet = [
-            0x45, 0x00, 0x00, 0x14, 0x00, 0x00, 0x40, 0x00, 64, 17, 0x00, 0x00, 192, 168, 0, 1,
-            192, 168, 0, 2,
+            0x45, 0x00, 0x00, 0x21, 0x00, 0x00, 0x40, 0x00, 64, 17, 0x00, 0x00, 192, 168, 0, 1,
+            192, 168, 0, 2, 0x30, 0x39, 0x01, 0xbb, 0x00, 0x0d, 0x00, 0x00, b'h', b'e', b'l', b'l',
+            b'o',
+        ];
+
+        let parsed = parse_ip_packet(&packet, None).unwrap();
+
+        assert_eq!(parsed.flow.source.port, 12_345);
+        assert_eq!(parsed.flow.destination.port, 443);
+        assert_eq!(parsed.flow.transport, TransportProtocol::Udp);
+        assert!(parsed.tcp.is_none());
+        assert_eq!(parsed.payload.unwrap().preview.as_deref(), Some("hello"));
+        assert_eq!(parsed.transport.header_len, 8);
+    }
+
+    #[test]
+    fn skips_unknown_ipv4_transport_packet() {
+        let packet = [
+            0x45, 0x00, 0x00, 0x14, 0x00, 0x00, 0x40, 0x00, 64, 1, 0x00, 0x00, 192, 168, 0, 1, 192,
+            168, 0, 2,
         ];
 
         assert!(parse_ip_packet(&packet, None).is_none());
