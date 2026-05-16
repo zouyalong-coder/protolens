@@ -436,7 +436,7 @@ button.ghost {
 
 .timeline-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(220px, 0.58fr) 250px minmax(420px, 1.42fr);
   min-height: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -447,14 +447,22 @@ button.ghost {
   padding: 0.8rem 1rem 1rem;
 }
 
-.timeline-packet-list {
+.timeline-packet-list,
+.timeline-packet-detail {
   display: grid;
   align-content: start;
-  gap: 0.5rem;
   min-height: 18rem;
   overflow: auto;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   padding: 0.8rem;
+}
+
+.timeline-packet-list {
+  gap: 0.5rem;
+}
+
+.timeline-packet-detail {
+  align-content: stretch;
 }
 
 .timeline-empty {
@@ -484,7 +492,7 @@ button.ghost {
 
 .timeline-lane-label {
   fill: #d7e8ff;
-  font-size: 0.72rem;
+  font-size: 0.62rem;
   font-weight: 800;
 }
 
@@ -502,7 +510,7 @@ button.ghost {
 
 .timeline-phase-meta {
   fill: #9fb3cc;
-  font-size: 0.66rem;
+  font-size: 0.62rem;
 }
 
 .timeline-arrow {
@@ -568,7 +576,7 @@ button.ghost {
 
 .timeline-packet-label {
   fill: #eef5ff;
-  font-size: 0.68rem;
+  font-size: 0.62rem;
 }
 
 .timeline-packet-item {
@@ -606,6 +614,66 @@ button.ghost {
   overflow-wrap: anywhere;
 }
 
+.timeline-detail-content {
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
+}
+
+.timeline-detail-kicker,
+.timeline-detail-section-title {
+  margin: 0 0 0.28rem;
+  color: #7ab7ff;
+  font-size: 0.68rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.timeline-detail-title {
+  margin: 0;
+  color: #f6faff;
+  font-size: 1rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.timeline-detail-grid {
+  display: grid;
+  grid-template-columns: 5.4rem minmax(0, 1fr);
+  gap: 0.45rem 0.7rem;
+  margin: 0;
+}
+
+.timeline-detail-grid dt {
+  color: #9fb3cc;
+  font-size: 0.72rem;
+}
+
+.timeline-detail-grid dd {
+  margin: 0;
+  color: #d7e8ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.timeline-detail-section pre {
+  max-height: 12rem;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  padding: 0.65rem;
+  background: rgba(255, 255, 255, 0.045);
+  color: #c7d8ee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 1100px) {
   .result-layout {
     grid-template-columns: 1fr;
@@ -619,7 +687,8 @@ button.ghost {
     grid-template-columns: 1fr;
   }
 
-  .timeline-packet-list {
+  .timeline-packet-list,
+  .timeline-packet-detail {
     max-height: 16rem;
     border-left: 0;
     border-top: 1px solid rgba(255, 255, 255, 0.08);

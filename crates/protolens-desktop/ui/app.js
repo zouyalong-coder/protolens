@@ -21,6 +21,7 @@ const timelineTitle = document.querySelector("#timelineTitle");
 const timelineMeta = document.querySelector("#timelineMeta");
 const timelineChart = document.querySelector("#timelineChart");
 const timelinePacketList = document.querySelector("#timelinePacketList");
+const timelinePacketDetail = document.querySelector("#timelinePacketDetail");
 const linkSelect = document.querySelector("#linkSelect");
 const linkCount = document.querySelector("#linkCount");
 const statusText = document.querySelector("#status");
@@ -39,6 +40,7 @@ let needsEventRender = false;
 let virtualScrollScheduled = false;
 let currentVirtualState = null;
 let timelineItems = [];
+let timelineLaneIndexes = new Map();
 let selectedTimelineSequence = null;
 
 const VIRTUAL_EVENT_THRESHOLD = 1_200;
@@ -46,7 +48,7 @@ const VIRTUAL_OVERSCAN_PX = 900;
 const ESTIMATED_EVENT_HEIGHT = 122;
 const ESTIMATED_GROUP_HEIGHT = 42;
 const MAX_TIMELINE_PACKETS = 300;
-const TIMELINE_LANE_GAP = 220;
+const TIMELINE_LANE_GAP = 104;
 const TIMELINE_TOP = 72;
 const TIMELINE_ROW_HEIGHT = 36;
 const TIMELINE_PHASE_HEIGHT = 34;
@@ -708,6 +710,94 @@ function timelineLaneKey(endpointValue) {
   return endpoint(endpointValue);
 }
 
+function timelineDirection(item) {
+  const source = endpoint(item.kind.flow.source);
+  const destination = endpoint(item.kind.flow.destination);
+  const sourceIndex = timelineLaneIndexes.get(source) ?? 0;
+  const destinationIndex = timelineLaneIndexes.get(destination) ?? sourceIndex;
+  if (sourceIndex <= destinationIndex) {
+    return {
+      left: source,
+      right: destination,
+      arrow: "->",
+    };
+  }
+
+  return {
+    left: destination,
+    right: source,
+    arrow: "<-",
+  };
+}
+
+function timelineDirectionLabel(item) {
+  const direction = timelineDirection(item);
+  return `${direction.left} ${direction.arrow} ${direction.right}`;
+}
+
+function selectedTimelineItem(sequence) {
+  return timelineItems.find((item) => item.sequence === sequence) ?? null;
+}
+
+function renderTimelineDetail(item) {
+  timelinePacketDetail.replaceChildren();
+
+  if (!item) {
+    timelinePacketDetail.innerHTML = `<div class="timeline-empty compact">Select a packet</div>`;
+    return;
+  }
+
+  const flow = item.kind.flow;
+  const flags = item.tcp ? tcpFlags(item.tcp) : "none";
+  const preview = item.payload?.preview ?? "";
+  const rawJson = JSON.stringify(item.raw, null, 2);
+
+  const detail = document.createElement("div");
+  detail.className = "timeline-detail-content";
+  detail.innerHTML = `
+    <div>
+      <p class="timeline-detail-kicker"></p>
+      <h3 class="timeline-detail-title"></h3>
+    </div>
+    <dl class="timeline-detail-grid">
+      <dt>Direction</dt>
+      <dd class="detail-direction"></dd>
+      <dt>Time</dt>
+      <dd class="detail-time"></dd>
+      <dt>Phase</dt>
+      <dd class="detail-phase"></dd>
+      <dt>Flags</dt>
+      <dd class="detail-flags"></dd>
+      <dt>Payload</dt>
+      <dd class="detail-payload"></dd>
+    </dl>
+    <div class="timeline-detail-section">
+      <p class="timeline-detail-section-title">Layers</p>
+      <pre class="detail-layers"></pre>
+    </div>
+    <div class="timeline-detail-section">
+      <p class="timeline-detail-section-title">Preview</p>
+      <pre class="detail-preview"></pre>
+    </div>
+    <div class="timeline-detail-section">
+      <p class="timeline-detail-section-title">Raw Event</p>
+      <pre class="detail-raw"></pre>
+    </div>
+  `;
+
+  detail.querySelector(".timeline-detail-kicker").textContent = `Packet #${item.sequence}`;
+  detail.querySelector(".timeline-detail-title").textContent = packetTimelineLabel(item);
+  detail.querySelector(".detail-direction").textContent = timelineDirectionLabel(item);
+  detail.querySelector(".detail-time").textContent = new Date(item.timestamp).toLocaleString();
+  detail.querySelector(".detail-phase").textContent = item.tcpPhaseGroup ?? "Other";
+  detail.querySelector(".detail-flags").textContent = flags;
+  detail.querySelector(".detail-payload").textContent = payloadLabel(item.payload);
+  detail.querySelector(".detail-layers").textContent = layerDetail(item.packet);
+  detail.querySelector(".detail-preview").textContent = preview || "No UTF-8 preview";
+  detail.querySelector(".detail-raw").textContent = rawJson;
+  timelinePacketDetail.append(detail);
+}
+
 function selectTimelinePacket(sequence) {
   selectedTimelineSequence = sequence;
 
@@ -725,6 +815,8 @@ function selectTimelinePacket(sequence) {
       });
     }
   }
+
+  renderTimelineDetail(selectedTimelineItem(sequence));
 }
 
 function renderTimelinePacketList(items) {
@@ -741,7 +833,7 @@ function renderTimelinePacketList(items) {
     `;
     button.querySelector(".timeline-packet-item-title").textContent = packetTimelineLabel(item);
     button.querySelector(".timeline-packet-item-meta").textContent =
-      `#${item.sequence} ${endpoint(item.kind.flow.source)} -> ${endpoint(item.kind.flow.destination)}`;
+      `#${item.sequence} ${timelineDirectionLabel(item)}`;
     button.addEventListener("click", () => selectTimelinePacket(item.sequence));
     fragment.append(button);
   }
@@ -790,12 +882,14 @@ function renderTimelineChart(items) {
   timelineTitle.textContent = timelineContextLabel();
   timelineChart.replaceChildren();
   timelinePacketList.replaceChildren();
+  timelinePacketDetail.replaceChildren();
   selectedTimelineSequence = null;
 
   if (!items.length) {
     timelineMeta.textContent = "No packets in the current view.";
     timelineChart.innerHTML = `<div class="timeline-empty">No packet flow to draw.</div>`;
     timelinePacketList.innerHTML = `<div class="timeline-empty compact">No packets</div>`;
+    timelinePacketDetail.innerHTML = `<div class="timeline-empty compact">No packet selected</div>`;
     return;
   }
 
@@ -813,8 +907,9 @@ function renderTimelineChart(items) {
       }
     }
   }
+  timelineLaneIndexes = laneIndexes;
 
-  const width = Math.max(760, 120 + Math.max(1, lanes.length - 1) * TIMELINE_LANE_GAP + 120);
+  const width = Math.max(320, 72 + Math.max(1, lanes.length - 1) * TIMELINE_LANE_GAP + 86);
   const height =
     TIMELINE_TOP +
     timelineRows.reduce(
@@ -825,7 +920,7 @@ function renderTimelineChart(items) {
   const firstTimestamp = shown[0].timestamp;
   const lastTimestamp = shown[shown.length - 1].timestamp;
   const duration = Math.max(0, lastTimestamp - firstTimestamp);
-  const laneX = (lane) => 70 + lane * TIMELINE_LANE_GAP;
+  const laneX = (lane) => 58 + lane * TIMELINE_LANE_GAP;
   const labelY = 28;
   let svg = `<svg class="timeline-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Packet timeline">`;
 
@@ -844,7 +939,7 @@ function renderTimelineChart(items) {
       const payloadBytes = row.items.reduce((total, item) => total + (item.payload?.original_len ?? 0), 0);
       svg += `<rect class="timeline-phase-band" x="0" y="${currentY - 19}" width="${width}" height="${TIMELINE_PHASE_HEIGHT}" />`;
       svg += `<text class="timeline-phase-title" x="12" y="${currentY + 3}">${escapeSvgText(row.phase)}</text>`;
-      svg += `<text class="timeline-phase-meta" x="${width - 12}" y="${currentY + 3}" text-anchor="end">${count} packets, ${payloadBytes}B</text>`;
+      svg += `<text class="timeline-phase-meta" x="96" y="${currentY + 3}">${count} pkts / ${payloadBytes}B</text>`;
       currentY += TIMELINE_PHASE_HEIGHT;
       return;
     }
@@ -897,7 +992,9 @@ function openTimeline() {
 function closeTimeline() {
   timelineModal.hidden = true;
   timelineItems = [];
+  timelineLaneIndexes = new Map();
   selectedTimelineSequence = null;
+  timelinePacketDetail.replaceChildren();
 }
 
 async function loadInterfaces() {
