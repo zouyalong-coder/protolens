@@ -7,8 +7,8 @@
 use protolens_capture::{
     CaptureInterface, PcapFileSource, PcapSource, PcapSourceConfig, list_interfaces,
 };
-use protolens_core::{CaptureEvent, CaptureEventKind, PacketSource, Result};
-use protolens_protocol::{TlsKeyLog, TlsPlaintextRestorer};
+use protolens_core::{AnalysisSink, CaptureEvent, CaptureEventKind, PacketSource, Result};
+use protolens_protocol::{AnalyzerRegistry, TlsKeyLog, TlsPlaintextRestorer};
 use std::path::PathBuf;
 
 /// Runtime capture options shared by CLI and desktop.
@@ -64,9 +64,15 @@ where
     F: FnMut(CaptureEvent) -> Result<()>,
     S: Fn() -> bool,
 {
-    emit_tls_key_log_status(config.tls_key_log_path.as_deref(), &mut on_event)?;
+    let key_log = load_tls_key_log(config.tls_key_log_path.as_deref())?;
+    emit_tls_key_log_status(
+        config.tls_key_log_path.as_deref(),
+        key_log.as_ref(),
+        &mut on_event,
+    )?;
     let mut tls_restorer =
         TlsPlaintextRestorer::new(config.tls_key_log_path.clone(), config.source.payload_limit)?;
+    let mut analyzers = AnalyzerRegistry::with_tls_key_log(key_log.as_ref());
 
     let mut source = PcapSource::new(config.source)?;
     let mut emitted_packets = 0usize;
@@ -79,8 +85,10 @@ where
                     | CaptureEventKind::UnsupportedPacket { .. }
             );
             let tls_events = tls_restorer.observe(&event)?;
+            emit_protocol_observations(&mut analyzers, &event, &mut on_event)?;
             on_event(event)?;
             for tls_event in tls_events {
+                emit_protocol_observations(&mut analyzers, &tls_event, &mut on_event)?;
                 on_event(tls_event)?;
             }
 
@@ -106,16 +114,20 @@ pub fn replay_pcap_file<F>(
 where
     F: FnMut(CaptureEvent) -> Result<()>,
 {
-    emit_tls_key_log_status(tls_key_log_path.as_deref(), &mut on_event)?;
+    let key_log = load_tls_key_log(tls_key_log_path.as_deref())?;
+    emit_tls_key_log_status(tls_key_log_path.as_deref(), key_log.as_ref(), &mut on_event)?;
     let mut tls_restorer = TlsPlaintextRestorer::new(tls_key_log_path, Some(payload_limit))?;
+    let mut analyzers = AnalyzerRegistry::with_tls_key_log(key_log.as_ref());
 
     let mut source = PcapFileSource::new(path, Some(payload_limit))?;
     let mut emitted_events = 0usize;
 
     while let Some(event) = source.next_event()? {
         let tls_events = tls_restorer.observe(&event)?;
+        emit_protocol_observations(&mut analyzers, &event, &mut on_event)?;
         on_event(event)?;
         for tls_event in tls_events {
+            emit_protocol_observations(&mut analyzers, &tls_event, &mut on_event)?;
             on_event(tls_event)?;
         }
         emitted_events += 1;
@@ -124,15 +136,53 @@ where
     Ok(emitted_events)
 }
 
-fn emit_tls_key_log_status<F>(path: Option<&std::path::Path>, on_event: &mut F) -> Result<()>
+fn emit_protocol_observations<F>(
+    analyzers: &mut AnalyzerRegistry,
+    event: &CaptureEvent,
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(CaptureEvent) -> Result<()>,
+{
+    let mut sink = VecAnalysisSink::default();
+    analyzers.analyze_event(event, &mut sink)?;
+    for event in sink.events {
+        on_event(event)?;
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct VecAnalysisSink {
+    events: Vec<CaptureEvent>,
+}
+
+impl AnalysisSink for VecAnalysisSink {
+    fn emit(&mut self, event: CaptureEvent) -> Result<()> {
+        self.events.push(event);
+        Ok(())
+    }
+}
+
+fn load_tls_key_log(path: Option<&std::path::Path>) -> Result<Option<TlsKeyLog>> {
+    path.map(TlsKeyLog::load).transpose()
+}
+
+fn emit_tls_key_log_status<F>(
+    path: Option<&std::path::Path>,
+    key_log: Option<&TlsKeyLog>,
+    on_event: &mut F,
+) -> Result<()>
 where
     F: FnMut(CaptureEvent) -> Result<()>,
 {
     let Some(path) = path else {
         return Ok(());
     };
+    let Some(key_log) = key_log else {
+        return Ok(());
+    };
 
-    let key_log = TlsKeyLog::load(path)?;
     let labels = key_log.label_counts();
     let entry_count = key_log.entries.len();
 

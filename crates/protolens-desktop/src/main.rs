@@ -220,12 +220,23 @@ async fn select_load_pcap_path(app: AppHandle) -> Result<Option<String>, String>
 
 #[tauri::command]
 async fn select_tls_key_log_path(app: AppHandle) -> Result<Option<String>, String> {
+    dialog_path_to_string(
+        app.dialog()
+            .file()
+            .add_filter("TLS Key Log", &["log", "txt"])
+            .set_title("Choose SSLKEYLOGFILE")
+            .blocking_pick_file(),
+    )
+}
+
+#[tauri::command]
+async fn create_tls_key_log_path(app: AppHandle) -> Result<Option<String>, String> {
     let selected = dialog_path_to_string(
         app.dialog()
             .file()
             .add_filter("TLS Key Log", &["log", "txt"])
             .set_file_name("protolens-sslkeys.log")
-            .set_title("Choose SSLKEYLOGFILE")
+            .set_title("Create SSLKEYLOGFILE")
             .blocking_save_file(),
     )?;
 
@@ -564,6 +575,7 @@ fn main() {
             save_current_pcap_as,
             select_load_pcap_path,
             select_tls_key_log_path,
+            create_tls_key_log_path,
             launch_chrome_with_tls_key_log,
             load_capture_file
         ])

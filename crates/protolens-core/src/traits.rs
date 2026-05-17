@@ -25,6 +25,20 @@ pub trait ProtocolAnalyzer {
     fn analyze(&mut self, event: &CaptureEvent, sink: &mut dyn AnalysisSink) -> Result<()>;
 }
 
+/// Event-level protocol analyzer interface.
+///
+/// Packet-level protocols such as QUIC and decrypted application protocols such
+/// as HTTP/2 can be recognized directly from capture events without first
+/// creating a TCP session model.
+pub trait EventProtocolAnalyzer {
+    /// Analyzer unique id, for example `quic.packet`.
+    fn id(&self) -> &'static str;
+
+    /// Consume an event and emit higher-level observations when it recognizes
+    /// protocol data.
+    fn analyze(&mut self, event: &CaptureEvent, sink: &mut dyn AnalysisSink) -> Result<()>;
+}
+
 /// 协议分析器输出观察事件的 sink。
 pub trait AnalysisSink {
     /// 输出一个分析事件。

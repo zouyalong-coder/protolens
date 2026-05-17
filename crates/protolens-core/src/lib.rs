@@ -13,4 +13,4 @@ pub use event::{
     NetworkLayerMeta, PacketMeta, Payload, PayloadEncoding, SessionEndReason, SessionMeta,
     TcpSegmentMeta, TimestampMillis, TransportLayerMeta, TransportProtocol,
 };
-pub use traits::{AnalysisSink, EventSink, PacketSource, ProtocolAnalyzer};
+pub use traits::{AnalysisSink, EventProtocolAnalyzer, EventSink, PacketSource, ProtocolAnalyzer};

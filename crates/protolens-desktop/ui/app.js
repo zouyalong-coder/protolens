@@ -58,6 +58,7 @@ let supportedPacketCount = 0;
 let unsupportedPacketCount = 0;
 let lastSuggestedFilter = null;
 let filterEditedByUser = false;
+let tlsKeyLogLoaded = false;
 
 const VIRTUAL_EVENT_THRESHOLD = 1_200;
 const VIRTUAL_OVERSCAN_PX = 900;
@@ -178,6 +179,203 @@ function payloadLabel(payload) {
   return `payload ${payload.original_len}B${payload.truncated ? " truncated" : ""}`;
 }
 
+function isHttpsPlaintext(kind) {
+  return kind.type === "protocol_observation" && kind.analyzer_id === "https.plaintext";
+}
+
+function isTlsKeyLogLoaded(kind) {
+  return kind.type === "protocol_observation" && kind.analyzer_id === "tls.keylog" && kind.metadata?.status === "loaded";
+}
+
+function isHttp2Frames(kind) {
+  return kind.type === "protocol_observation" && kind.analyzer_id === "http2.frames";
+}
+
+function isHttp3Frame(kind) {
+  return kind.type === "protocol_observation" && kind.analyzer_id === "http3.frame";
+}
+
+function isQuicPacket(kind) {
+  return kind.type === "protocol_observation" && kind.analyzer_id === "quic.packet";
+}
+
+function isLikelyQuicFlow(flow) {
+  if (!flow || normalizeType(flow.transport) !== "udp") return false;
+  return flow.source?.port === 443 || flow.destination?.port === 443;
+}
+
+function itemHasProtocol(item, protocolNameValue) {
+  return item?.protocols?.some((protocol) => protocol.protocol === protocolNameValue) ?? false;
+}
+
+function isQuicLikeItem(item) {
+  return (
+    isQuicPacket(item?.kind || {}) ||
+    isHttp3Frame(item?.kind || {}) ||
+    isLikelyQuicFlow(item?.flow) ||
+    itemHasProtocol(item, "QUIC") ||
+    itemHasProtocol(item, "HTTP/3") ||
+    itemHasProtocol(item, "QUIC/HTTP3")
+  );
+}
+
+function payloadText(payload) {
+  if (!payload) return "";
+  return payload.preview || payloadByteView(payload);
+}
+
+function payloadBytes(payload) {
+  if (!payload?.data || payload.encoding !== "base64") return null;
+
+  try {
+    const binary = window.atob(payload.data);
+    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+function byteHex(value) {
+  return value.toString(16).padStart(2, "0");
+}
+
+function payloadByteView(payload) {
+  const bytes = payloadBytes(payload);
+  if (!bytes?.length) return "";
+
+  const rows = [];
+  const shown = bytes.slice(0, 512);
+  for (let offset = 0; offset < shown.length; offset += 16) {
+    const chunk = shown.slice(offset, offset + 16);
+    const hex = [...chunk].map(byteHex).join(" ").padEnd(47, " ");
+    const ascii = [...chunk]
+      .map((value) => (value >= 0x20 && value <= 0x7e ? String.fromCharCode(value) : "."))
+      .join("");
+    rows.push(`${offset.toString(16).padStart(4, "0")}  ${hex}  ${ascii}`);
+  }
+
+  const omitted = bytes.length > shown.length ? `\n... ${bytes.length - shown.length} more bytes` : "";
+  return `${rows.join("\n")}${omitted}`;
+}
+
+function http2FrameType(value) {
+  const names = {
+    0x0: "DATA",
+    0x1: "HEADERS",
+    0x2: "PRIORITY",
+    0x3: "RST_STREAM",
+    0x4: "SETTINGS",
+    0x5: "PUSH_PROMISE",
+    0x6: "PING",
+    0x7: "GOAWAY",
+    0x8: "WINDOW_UPDATE",
+    0x9: "CONTINUATION",
+  };
+  return names[value] || `TYPE_${value}`;
+}
+
+function http2FrameSummary(payload) {
+  const bytes = payloadBytes(payload);
+  if (!bytes?.length) return "";
+
+  let offset = 0;
+  const preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+  const prefix = new TextDecoder().decode(bytes.slice(0, preface.length));
+  const lines = [];
+  if (prefix === preface) {
+    lines.push("HTTP/2 client connection preface");
+    offset = preface.length;
+  }
+
+  while (offset + 9 <= bytes.length && lines.length < 16) {
+    const length = (bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2];
+    const type = bytes[offset + 3];
+    const flags = bytes[offset + 4];
+    const streamId =
+      ((bytes[offset + 5] & 0x7f) << 24) |
+      (bytes[offset + 6] << 16) |
+      (bytes[offset + 7] << 8) |
+      bytes[offset + 8];
+    if (offset + 9 + length > bytes.length) break;
+    lines.push(`${http2FrameType(type)} stream=${streamId} length=${length} flags=0x${byteHex(flags)}`);
+    offset += 9 + length;
+  }
+
+  return lines.length ? lines.join("\n") : "";
+}
+
+function payloadDisplayText(payload, item = null) {
+  if (!payload) return "No payload bytes captured";
+
+  if (item && isQuicLikeItem(item)) {
+    if (isQuicPacket(item.kind) && item.kind.metadata?.decryption === "decrypted_1rtt") {
+      const frames = item.kind.metadata?.frames || [];
+      const frameText = frames.length
+        ? frames.map((frame) => frame.frame_type || `TYPE_${frame.type_id}`).join(", ")
+        : "No parsed QUIC frame";
+      const bytes = payload.preview || payloadByteView(payload);
+      return [`Decrypted QUIC 1-RTT payload`, `Frames: ${frameText}`, bytes].filter(Boolean).join("\n\n");
+    }
+
+    return tlsKeyLogLoaded
+      ? [
+          "Raw UDP payload is encrypted QUIC packet data.",
+          "SSLKEYLOGFILE is loaded. ProtoLens runs QUIC packet protection decryption in the quic.packet observation for this datagram.",
+          "Select the adjacent quic.packet event in the timeline to inspect decrypted QUIC 1-RTT frames and bytes.",
+        ].join("\n")
+      : [
+          "QUIC encrypted payload",
+          "Load an SSLKEYLOGFILE to enable QUIC 1-RTT packet decryption.",
+          "Without matching key log secrets, this payload is intentionally hidden instead of shown as base64 noise.",
+        ].join("\n");
+  }
+
+  const parts = [];
+  if (item && isHttpsPlaintext(item.kind)) {
+    const frames = http2FrameSummary(payload);
+    if (frames) parts.push(`HTTPS plaintext: HTTP/2 frames\n${frames}`);
+  }
+
+  if (payload.preview) {
+    parts.push(`UTF-8 plaintext\n${payload.preview}`);
+  } else {
+    const bytes = payloadByteView(payload);
+    parts.push(bytes ? `Decoded bytes (hex / ascii)\n${bytes}` : "Payload bytes could not be decoded");
+  }
+
+  return parts.join("\n\n");
+}
+
+function http3PreviewText(kind) {
+  const frame = kind.metadata?.frame || {};
+  const headers = frame.headers || [];
+  const headerText = headers.map((header) => `${header.name}: ${header.value}`).join("\n");
+  const dataText = frame.data_preview || "";
+  return headerText || dataText || "";
+}
+
+function observationProtocols(kind) {
+  if (isHttpsPlaintext(kind)) {
+    return [{ layer: "L7", protocol: "HTTPS" }];
+  }
+  if (isHttp2Frames(kind)) {
+    return [{ layer: "L7", protocol: "HTTP/2" }];
+  }
+  if (isHttp3Frame(kind)) {
+    return [{ layer: "L7", protocol: "HTTP/3" }];
+  }
+  if (isQuicPacket(kind)) {
+    return [{ layer: "L7", protocol: "QUIC" }];
+  }
+
+  return [];
+}
+
+function appendProtocol(state, item) {
+  if (!state.protocols[item.layer]) state.protocols[item.layer] = new Set();
+  state.protocols[item.layer].add(item.protocol);
+}
+
 function escapeSvgText(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -281,7 +479,7 @@ function createLayerSection(title, subtitle, rows) {
   return section;
 }
 
-function createPayloadSection(payload) {
+function createPayloadSection(payload, item = null) {
   const payloadPreview = payload?.preview || "No UTF-8 preview";
   const payloadSection = createLayerSection("Payload", payload ? `${payload.original_len} B` : "0 B", [
     ["Original Length", payload ? `${payload.original_len} B` : "0 B"],
@@ -291,24 +489,130 @@ function createPayloadSection(payload) {
   ]);
   const dataBlock = document.createElement("pre");
   dataBlock.className = "packet-payload-data";
-  dataBlock.textContent = payload?.data || "No payload bytes captured";
+  dataBlock.textContent = payloadDisplayText(payload, item);
   payloadSection.querySelector(".packet-layer-body").append(dataBlock);
   return payloadSection;
+}
+
+function createObservationLayerSections(item) {
+  if (isHttpsPlaintext(item.kind)) {
+    return [
+      createLayerSection("L7 HTTPS", "plaintext", [
+        ["Analyzer", item.kind.analyzer_id],
+        ["Direction", item.kind.metadata?.direction],
+        ["Cipher Suite", item.kind.metadata?.cipher_suite],
+        ["Payload", payloadLabel(item.payload)],
+      ]),
+    ];
+  }
+
+  if (isHttp2Frames(item.kind)) {
+    const frames = item.kind.metadata?.frames || [];
+    const frameText = frames
+      .map((frame) => `${frame.frame_type} stream=${frame.stream_id} length=${frame.length} flags=0x${byteHex(frame.flags)}`)
+      .join("\n");
+    const section = createLayerSection("L7 HTTP/2", `${frames.length} frame${frames.length === 1 ? "" : "s"}`, [
+      ["Analyzer", item.kind.analyzer_id],
+      ["Direction", item.kind.metadata?.direction],
+      ["Frame Count", frames.length],
+    ]);
+    const frameBlock = document.createElement("pre");
+    frameBlock.className = "packet-payload-data";
+    frameBlock.textContent = frameText || "No complete HTTP/2 frame";
+    section.querySelector(".packet-layer-body").append(frameBlock);
+    return [section];
+  }
+
+  if (isHttp3Frame(item.kind)) {
+    const frame = item.kind.metadata?.frame || {};
+    const headers = frame.headers || [];
+    const headerText = headers.map((header) => `${header.name}: ${header.value}`).join("\n");
+    const dataText = frame.data_preview || "";
+    const bodyText = headerText || dataText || "No decoded HTTP/3 payload";
+    const section = createLayerSection("L7 HTTP/3", frame.frame_type || "frame", [
+      ["Analyzer", item.kind.analyzer_id],
+      ["Direction", item.kind.metadata?.direction],
+      ["Stream ID", item.kind.metadata?.stream_id ?? frame.stream_id],
+      ["Frame Type", frame.frame_type],
+      ["Frame Length", frame.length == null ? null : `${frame.length} B`],
+      ["Header Count", headers.length],
+      ["Data Length", frame.data_len == null ? null : `${frame.data_len} B`],
+    ]);
+    const frameBlock = document.createElement("pre");
+    frameBlock.className = "packet-payload-data";
+    frameBlock.textContent = bodyText;
+    section.querySelector(".packet-layer-body").append(frameBlock);
+    return [section];
+  }
+
+  if (isQuicPacket(item.kind)) {
+    const packet = item.kind.metadata?.packet || {};
+    const frames = item.kind.metadata?.frames || [];
+    const frameText = frames
+      .map((frame) => `${frame.frame_type || "UNKNOWN"} type=0x${byteHex(frame.type_id)}`)
+      .join("\n");
+    const section = createLayerSection("L7 QUIC", packet.packet_type || "packet", [
+      ["Analyzer", item.kind.analyzer_id],
+      ["Header Form", packet.header_form],
+      ["Packet Type", packet.packet_type],
+      ["Version", packet.version == null ? null : `0x${packet.version.toString(16)}`],
+      ["DCID Length", packet.destination_connection_id_len],
+      ["SCID Length", packet.source_connection_id_len],
+      ["Decryption", item.kind.metadata?.decryption],
+      ["Payload Length", item.kind.metadata?.payload_len],
+      ["Frame Count", frames.length],
+    ]);
+    if (frames.length) {
+      const frameBlock = document.createElement("pre");
+      frameBlock.className = "packet-payload-data";
+      frameBlock.textContent = frameText;
+      section.querySelector(".packet-layer-body").append(frameBlock);
+    }
+    return [
+      section,
+    ];
+  }
+
+  return item.protocols.map((protocol) =>
+    createLayerSection(`${protocol.layer} ${protocol.protocol}`, protocol.protocol, [
+      ["Layer", protocol.layer],
+      ["Protocol", protocol.protocol],
+      ["Event", item.kind.type],
+    ]),
+  );
+}
+
+function createPacketProtocolLayerSections(item) {
+  if (!isQuicLikeItem(item)) return [];
+
+  const protocol = itemHasProtocol(item, "QUIC") ? "QUIC" : "QUIC/HTTP3";
+  return [
+    createLayerSection("L7 QUIC", protocol, [
+      ["Protocol", protocol],
+      ["Status", tlsKeyLogLoaded ? "key log loaded, check quic.packet observation" : "encrypted"],
+      ["Readable Content", tlsKeyLogLoaded ? "available on decrypted quic.packet events" : "requires key log"],
+    ]),
+  ];
 }
 
 function renderLayerSections(container, item, flags) {
   container.replaceChildren();
 
   if (!item.packet) {
-    const empty = document.createElement("div");
-    empty.className = "timeline-empty compact";
-    empty.textContent = "No parsed layer metadata";
-    container.append(empty, createPayloadSection(item.payload));
+    const observationLayers = createObservationLayerSections(item);
+    if (observationLayers.length) {
+      container.append(...observationLayers, createPayloadSection(item.payload, item));
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "timeline-empty compact";
+      empty.textContent = "No parsed layer metadata";
+      container.append(empty, createPayloadSection(item.payload, item));
+    }
     return;
   }
 
   const packet = item.packet;
-  const flow = item.kind.flow;
+  const flow = item.flow;
   const payload = item.payload;
 
   container.append(
@@ -334,7 +638,26 @@ function renderLayerSections(container, item, flags) {
     ]),
   );
 
-  container.append(createPayloadSection(payload));
+  const protocolLayers = createPacketProtocolLayerSections(item);
+  if (protocolLayers.length) {
+    container.append(...protocolLayers);
+  }
+
+  container.append(createPayloadSection(payload, item));
+}
+
+function appendTimelineProtocolTags(container, item) {
+  const seen = new Set();
+  for (const protocol of item.protocols) {
+    const key = `${protocol.layer}:${protocol.protocol}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const tag = document.createElement("span");
+    tag.className = "timeline-protocol-chip";
+    tag.textContent = `${protocol.layer} ${protocol.protocol}`;
+    container.append(tag);
+  }
 }
 
 function linkKey(flow) {
@@ -382,6 +705,9 @@ function getLinkState(flow) {
       rightToLeftBytes: 0,
       packets: 0,
       bytes: 0,
+      decryptedEvents: 0,
+      decryptedBytes: 0,
+      diagnostics: new Set(),
       client: null,
       server: null,
       phase: "observing",
@@ -389,6 +715,7 @@ function getLinkState(flow) {
         L2: new Set(),
         L3: new Set(),
         L4: new Set(),
+        L7: new Set(),
       },
     });
   }
@@ -413,7 +740,12 @@ function updateLink(flow, tcp, payload, protocols) {
   }
 
   for (const item of protocols) {
-    state.protocols[item.layer].add(item.protocol);
+    appendProtocol(state, item);
+  }
+
+  if (isLikelyQuicFlow(flow) && tlsKeyLogLoaded) {
+    appendProtocol(state, { layer: "L7", protocol: "QUIC/HTTP3" });
+    state.diagnostics.add("UDP/443 likely QUIC/HTTP3; key log loaded, decrypted payload appears on quic.packet events when secrets match.");
   }
 
   if (tcp?.syn && !tcp.ack) {
@@ -435,6 +767,54 @@ function updateLink(flow, tcp, payload, protocols) {
   }
 
   return state.key;
+}
+
+function updateLinkObservation(flow, kind, protocols, payload) {
+  const state = getLinkState(flow);
+  if (!state) return null;
+
+  for (const item of protocols) {
+    appendProtocol(state, item);
+  }
+
+  if (isHttpsPlaintext(kind)) {
+    state.decryptedEvents += 1;
+    state.decryptedBytes += payload?.original_len ?? 0;
+    state.phase = "decrypted";
+  }
+
+  if (isQuicPacket(kind) && kind.metadata?.decryption === "decrypted_1rtt") {
+    state.decryptedEvents += 1;
+    state.decryptedBytes += kind.metadata?.payload_len ?? 0;
+    state.phase = "decrypted";
+  }
+
+  if (isHttp3Frame(kind)) {
+    state.phase = "decrypted";
+  }
+
+  return state.key;
+}
+
+function refreshQuicDiagnostics() {
+  if (!tlsKeyLogLoaded) return false;
+
+  let changed = false;
+  for (const event of capturedEvents) {
+    if (!isLikelyQuicFlow(event.flow)) continue;
+    const state = getLinkState(event.flow);
+    if (!state) continue;
+    appendProtocol(state, { layer: "L7", protocol: "QUIC/HTTP3" });
+    if (!event.protocols.some((item) => item.layer === "L7" && item.protocol === "QUIC/HTTP3")) {
+      event.protocols.push({ layer: "L7", protocol: "QUIC/HTTP3" });
+      changed = true;
+    }
+    const before = state.diagnostics.size;
+    state.diagnostics.add("UDP/443 likely QUIC/HTTP3; key log loaded, decrypted payload appears on quic.packet events when secrets match.");
+    changed ||= state.diagnostics.size !== before;
+  }
+
+  return changed;
 }
 
 function protocolItems(link) {
@@ -466,6 +846,9 @@ function linkSearchText(link) {
     link.phase,
     `${link.packets} packets`,
     `${link.bytes} bytes`,
+    `${link.decryptedEvents} decrypted`,
+    `${link.decryptedBytes} plaintext bytes`,
+    ...link.diagnostics,
     ...protocols,
   ]
     .filter(Boolean)
@@ -535,7 +918,14 @@ function renderLinks() {
     button.querySelector(".link-filter-meta").textContent =
       `${link.phase} | ${link.packets} packets, ${link.bytes} bytes | ` +
       `${link.leftToRightPackets}/${link.leftToRightBytes}B -> | ` +
-      `<- ${link.rightToLeftPackets}/${link.rightToLeftBytes}B`;
+      `<- ${link.rightToLeftPackets}/${link.rightToLeftBytes}B` +
+      (link.decryptedEvents ? ` | HTTPS ${link.decryptedEvents}/${link.decryptedBytes}B` : "");
+    if (link.diagnostics.size) {
+      const diagnostics = document.createElement("span");
+      diagnostics.className = "link-filter-diagnostic";
+      diagnostics.textContent = [...link.diagnostics][0];
+      button.append(diagnostics);
+    }
     button.addEventListener("click", () => selectLink(link.key));
     linkFragment.append(button);
   }
@@ -625,7 +1015,12 @@ function groupDescription(group, items) {
     return `${items.length} packets, ${payloadBytes} payload bytes`;
   }
 
-  return `${items.length} packets`;
+  if (selectedProtocolView?.layer === "L7" && selectedProtocolView.protocol === "HTTPS") {
+    const payloadBytes = items.reduce((total, item) => total + (item.payload?.original_len ?? 0), 0);
+    return `${items.length} observations, ${payloadBytes} plaintext bytes`;
+  }
+
+  return `${items.length} events`;
 }
 
 function createGroupHeader(group, items) {
@@ -682,6 +1077,28 @@ function summarizeEvent(event) {
   }
 
   if (kind.type === "protocol_observation") {
+    if (isHttp3Frame(kind)) {
+      const frame = kind.metadata?.frame || {};
+      const headers = frame.headers || [];
+      const headerPreview = headers
+        .slice(0, 4)
+        .map((header) => `${header.name}: ${header.value}`)
+        .join(", ");
+      const dataPreview = frame.data_preview ? ` data=${JSON.stringify(frame.data_preview)}` : "";
+      return {
+        title: kind.summary || `HTTP/3 ${frame.frame_type || "frame"}`,
+        detail: [
+          `stream=${kind.metadata?.stream_id ?? frame.stream_id ?? "?"}`,
+          `length=${frame.length ?? 0}B`,
+          headerPreview,
+          dataPreview,
+        ]
+          .filter(Boolean)
+          .join(" | "),
+        badges: ["HTTP/3", frame.frame_type || "frame"],
+      };
+    }
+
     const payload = kind.metadata?.payload;
     const preview = payload?.preview ? ` preview=${JSON.stringify(payload.preview)}` : "";
     return {
@@ -714,6 +1131,9 @@ function createEventRow(item) {
     <div class="event-tags"></div>
     <div class="event-detail"></div>
   `;
+  if (isHttpsPlaintext(item.kind)) {
+    row.classList.add("event-plaintext");
+  }
   row.querySelector(".event-main").textContent = item.summary.title;
   const tags = row.querySelector(".event-tags");
   for (const badge of item.summary.badges ?? []) {
@@ -723,6 +1143,12 @@ function createEventRow(item) {
     tags.append(tag);
   }
   row.querySelector(".event-detail").textContent = item.summary.detail;
+  if (isHttpsPlaintext(item.kind)) {
+    const plaintext = document.createElement("pre");
+    plaintext.className = "event-plaintext-body";
+    plaintext.textContent = payloadText(item.payload) || "No plaintext preview";
+    row.append(plaintext);
+  }
   return row;
 }
 
@@ -880,21 +1306,32 @@ function scheduleRender({
 function appendEvent(event) {
   eventCount += 1;
   const kind = eventKind(event);
+  if (isTlsKeyLogLoaded(kind)) {
+    tlsKeyLogLoaded = true;
+  }
   if (kind.type === "interface_packet") supportedPacketCount += 1;
   if (kind.type === "unsupported_packet") unsupportedPacketCount += 1;
   const summary = summarizeEvent(event);
   const flow = kind.type === "interface_packet" ? kind.flow : kind.metadata?.flow ?? null;
-  const protocols = linkProtocols(kind.packet);
-  const observationPayload = kind.type === "protocol_observation" ? kind.metadata?.payload : null;
+  const packetProtocols = linkProtocols(kind.packet);
+  if (kind.type === "interface_packet" && isLikelyQuicFlow(flow)) {
+    packetProtocols.push({ layer: "L7", protocol: "QUIC/HTTP3" });
+  }
+  const protocols = kind.type === "interface_packet" ? packetProtocols : observationProtocols(kind);
+  const observationPayload =
+    kind.type === "protocol_observation" ? (kind.metadata?.plaintext ?? kind.metadata?.payload) : null;
   const rowLinkKey =
     flow && kind.type === "interface_packet"
-      ? updateLink(flow, kind.tcp, kind.payload, protocols)
-      : linkKey(flow);
+      ? updateLink(flow, kind.tcp, kind.payload, packetProtocols)
+      : flow
+        ? updateLinkObservation(flow, kind, protocols, observationPayload)
+        : linkKey(flow);
   capturedEvents.push({
     raw: event,
     kind,
     summary,
     linkKey: rowLinkKey || "",
+    flow,
     timestamp: timestampMillis(event.timestamp),
     sequence: eventCount,
     packet: kind.packet,
@@ -903,8 +1340,9 @@ function appendEvent(event) {
     payload: kind.payload || observationPayload,
     tcpPhaseGroup: tcpPhaseGroup(kind.tcp, kind.payload || observationPayload),
   });
+  const diagnosticChanged = isTlsKeyLogLoaded(kind) ? refreshQuicDiagnostics() : false;
   scheduleRender({
-    links: Boolean(rowLinkKey),
+    links: Boolean(rowLinkKey) || diagnosticChanged,
     events: eventVisible(capturedEvents[capturedEvents.length - 1]),
   });
 }
@@ -929,12 +1367,21 @@ function clearEvents() {
   linkSelect.replaceChildren(new Option("All links", ""));
   linkCount.textContent = "0";
   linkFilterInput.value = "";
+  tlsKeyLogLoaded = false;
 }
 
 function timelinePackets() {
   return capturedEvents
     .filter(eventVisible)
-    .filter((item) => item.kind.type === "interface_packet" && item.kind.flow)
+    .filter(
+      (item) =>
+        item.flow &&
+        (item.kind.type === "interface_packet" ||
+          isHttpsPlaintext(item.kind) ||
+          isHttp2Frames(item.kind) ||
+          isHttp3Frame(item.kind) ||
+          isQuicPacket(item.kind))
+    )
     .sort((left, right) => left.timestamp - right.timestamp || left.sequence - right.sequence);
 }
 
@@ -951,6 +1398,18 @@ function timelineContextLabel() {
 }
 
 function packetTimelineLabel(item) {
+  if (isHttp2Frames(item.kind)) return "HTTP/2 frames";
+  if (isHttp3Frame(item.kind)) {
+    const frame = item.kind.metadata?.frame || {};
+    const frameName = frame.frame_type || "frame";
+    const stream = item.kind.metadata?.stream_id ?? frame.stream_id;
+    return `HTTP/3 ${frameName}${stream == null ? "" : ` stream=${stream}`}`;
+  }
+  if (isQuicPacket(item.kind)) return "QUIC packet";
+  if (isHttpsPlaintext(item.kind)) {
+    const payload = item.payload?.original_len ? ` ${item.payload.original_len}B` : "";
+    return `HTTPS plaintext${payload}`;
+  }
   const transport = item.protocols.find((protocol) => protocol.layer === "L4")?.protocol ?? "PACKET";
   const base = item.tcp ? packetLabel(item.tcp, item.payload, item.packet) : transport;
   const payload = item.payload?.original_len ? ` ${item.payload.original_len}B` : "";
@@ -962,8 +1421,8 @@ function timelineLaneKey(endpointValue) {
 }
 
 function timelineDirection(item) {
-  const source = endpoint(item.kind.flow.source);
-  const destination = endpoint(item.kind.flow.destination);
+  const source = endpoint(item.flow.source);
+  const destination = endpoint(item.flow.destination);
   const sourceIndex = timelineLaneIndexes.get(source) ?? 0;
   const destinationIndex = timelineLaneIndexes.get(destination) ?? sourceIndex;
   if (sourceIndex <= destinationIndex) {
@@ -999,7 +1458,11 @@ function renderTimelineDetail(item) {
   }
 
   const flags = item.tcp ? tcpFlags(item.tcp) : "none";
-  const preview = item.payload?.preview ?? "";
+  const preview = isHttp3Frame(item.kind)
+    ? http3PreviewText(item.kind)
+    : isHttpsPlaintext(item.kind)
+      ? payloadText(item.payload)
+      : (item.payload?.preview ?? "");
   const rawJson = JSON.stringify(item.raw, null, 2);
 
   const detail = document.createElement("div");
@@ -1037,7 +1500,8 @@ function renderTimelineDetail(item) {
     </div>
   `;
 
-  detail.querySelector(".timeline-detail-kicker").textContent = `Packet #${item.sequence}`;
+  detail.querySelector(".timeline-detail-kicker").textContent =
+    item.kind.type === "interface_packet" ? `Packet #${item.sequence}` : `Event #${item.sequence}`;
   detail.querySelector(".timeline-detail-title").textContent = packetTimelineLabel(item);
   detail.querySelector(".detail-direction").textContent = timelineDirectionLabel(item);
   detail.querySelector(".detail-time").textContent = new Date(item.timestamp).toLocaleString();
@@ -1086,9 +1550,11 @@ function renderTimelinePacketList(items) {
     button.dataset.sequence = String(item.sequence);
     button.innerHTML = `
       <span class="timeline-packet-item-title"></span>
+      <span class="timeline-protocol-stack"></span>
       <span class="timeline-packet-item-meta"></span>
     `;
     button.querySelector(".timeline-packet-item-title").textContent = packetTimelineLabel(item);
+    appendTimelineProtocolTags(button.querySelector(".timeline-protocol-stack"), item);
     button.querySelector(".timeline-packet-item-meta").textContent =
       `#${item.sequence} ${timelineDirectionLabel(item)}`;
     button.addEventListener("click", () => selectTimelinePacket(item.sequence));
@@ -1156,7 +1622,7 @@ function renderTimelineChart(items) {
   const lanes = [];
   const laneIndexes = new Map();
   for (const item of shown) {
-    for (const value of [item.kind.flow.source, item.kind.flow.destination]) {
+    for (const value of [item.flow.source, item.flow.destination]) {
       const key = timelineLaneKey(value);
       if (!laneIndexes.has(key)) {
         laneIndexes.set(key, lanes.length);
@@ -1202,8 +1668,8 @@ function renderTimelineChart(items) {
     }
 
     const item = row.item;
-    const sourceIndex = laneIndexes.get(timelineLaneKey(item.kind.flow.source));
-    const destinationIndex = laneIndexes.get(timelineLaneKey(item.kind.flow.destination));
+    const sourceIndex = laneIndexes.get(timelineLaneKey(item.flow.source));
+    const destinationIndex = laneIndexes.get(timelineLaneKey(item.flow.destination));
     const x1 = laneX(sourceIndex);
     const x2 = laneX(destinationIndex);
     const y = currentY;
@@ -1401,7 +1867,7 @@ async function launchChromeWithTlsKeyLog() {
   let path = tlsKeyLogInput.value.trim();
   try {
     if (!path) {
-      path = await invoke("select_tls_key_log_path");
+      path = await invoke("create_tls_key_log_path");
       if (!path) return;
       tlsKeyLogInput.value = path;
     }

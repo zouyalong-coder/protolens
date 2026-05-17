@@ -318,6 +318,16 @@ button.ghost {
   font-size: 0.75rem;
 }
 
+.link-filter-diagnostic {
+  display: block;
+  margin-top: 0.45rem;
+  border-left: 2px solid rgba(255, 202, 103, 0.72);
+  padding-left: 0.5rem;
+  color: #ffe0a6;
+  font-size: 0.73rem;
+  line-height: 1.35;
+}
+
 .protocol-stack {
   display: flex;
   flex-wrap: wrap;
@@ -457,6 +467,27 @@ button.ghost {
   color: #9fb3cc;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.event-plaintext {
+  border-color: rgba(90, 216, 166, 0.35);
+  background: rgba(90, 216, 166, 0.075);
+}
+
+.event-plaintext-body {
+  max-height: 14rem;
+  margin: 0.15rem 0 0;
+  overflow: auto;
+  border: 1px solid rgba(90, 216, 166, 0.22);
+  border-radius: 0.5rem;
+  padding: 0.7rem;
+  background: rgba(3, 16, 15, 0.34);
+  color: #d9fff0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -676,6 +707,27 @@ button.ghost {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.68rem;
   overflow-wrap: anywhere;
+}
+
+.timeline-protocol-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+}
+
+.timeline-protocol-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.32rem;
+  border: 1px solid rgba(134, 194, 255, 0.22);
+  border-radius: 999px;
+  padding: 0.12rem 0.38rem;
+  background: rgba(134, 194, 255, 0.08);
+  color: #b9dcff;
+  font-size: 0.64rem;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .timeline-detail-content {
