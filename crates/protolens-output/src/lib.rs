@@ -39,18 +39,16 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
     }
 
     fn write(&mut self, event: &CaptureEvent) -> Result<()> {
+        let timestamp = format_timestamp_beijing(event.timestamp);
+
         match &event.kind {
             CaptureEventKind::CaptureStarted { mode } => {
-                writeln!(
-                    self.writer,
-                    "[{}] capture started mode={mode}",
-                    event.timestamp
-                )?;
+                writeln!(self.writer, "[{}] capture started mode={mode}", timestamp)?;
             }
             CaptureEventKind::InterfacePacket {
                 flow, tcp, payload, ..
             } => {
-                write!(self.writer, "[{}] packet", event.timestamp)?;
+                write!(self.writer, "[{}] packet", timestamp)?;
 
                 if let Some(flow) = flow {
                     write!(self.writer, " {}", format_flow(flow, &self.dns_names))?;
@@ -75,10 +73,7 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
                     writeln!(
                         self.writer,
                         "[{}] dns {} -> {} ttl={}s",
-                        event.timestamp,
-                        resolution.hostname,
-                        resolution.address,
-                        resolution.ttl_seconds
+                        timestamp, resolution.hostname, resolution.address, resolution.ttl_seconds
                     )?;
                 }
             }
@@ -90,14 +85,14 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
                 writeln!(
                     self.writer,
                     "[{}] unsupported packet link_type={} frame={}B reason={}",
-                    event.timestamp, link_type, frame_len, reason
+                    timestamp, link_type, frame_len, reason
                 )?;
             }
             CaptureEventKind::TcpSessionStarted { session } => {
                 writeln!(
                     self.writer,
                     "[{}] tcp session started id={} {}",
-                    event.timestamp,
+                    timestamp,
                     session.id,
                     format_flow(&session.flow, &self.dns_names)
                 )?;
@@ -110,7 +105,7 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
                 writeln!(
                     self.writer,
                     "[{}] tcp bytes session={} direction={direction:?} payload={}",
-                    event.timestamp,
+                    timestamp,
                     session_id,
                     format_payload(payload)
                 )?;
@@ -119,7 +114,7 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
                 writeln!(
                     self.writer,
                     "[{}] tcp session ended id={} reason={reason:?}",
-                    event.timestamp, session_id
+                    timestamp, session_id
                 )?;
             }
             CaptureEventKind::ProtocolObservation {
@@ -131,14 +126,14 @@ impl<W: Write> EventSink for FormattedEventSink<W> {
                 writeln!(
                     self.writer,
                     "[{}] observation analyzer={} session={} {}",
-                    event.timestamp,
+                    timestamp,
                     analyzer_id,
                     session_id.as_deref().unwrap_or("none"),
                     summary
                 )?;
             }
             CaptureEventKind::Error { message } => {
-                writeln!(self.writer, "[{}] error {message}", event.timestamp)?;
+                writeln!(self.writer, "[{}] error {message}", timestamp)?;
             }
         }
 
@@ -195,6 +190,8 @@ impl<W: Write> EventSink for LinkEventSink<W> {
     }
 
     fn write(&mut self, event: &CaptureEvent) -> Result<()> {
+        let timestamp = format_timestamp_beijing(event.timestamp);
+
         let (flow, tcp, payload) = match &event.kind {
             CaptureEventKind::DnsResolved { resolutions } => {
                 for resolution in resolutions {
@@ -229,7 +226,7 @@ impl<W: Write> EventSink for LinkEventSink<W> {
             writeln!(
                 self.writer,
                 "[{}] link {} new {} -> {}",
-                event.timestamp,
+                timestamp,
                 link.id,
                 format_endpoint(&link.client, &self.dns_names),
                 format_endpoint(&link.server, &self.dns_names)
@@ -246,7 +243,7 @@ impl<W: Write> EventSink for LinkEventSink<W> {
             writeln!(
                 self.writer,
                 "[{}] link {} connect syn {} -> {}",
-                event.timestamp,
+                timestamp,
                 link.id,
                 format_endpoint(&link.client, &self.dns_names),
                 format_endpoint(&link.server, &self.dns_names)
@@ -256,17 +253,13 @@ impl<W: Write> EventSink for LinkEventSink<W> {
             writeln!(
                 self.writer,
                 "[{}] link {} connect syn-ack {}",
-                event.timestamp,
+                timestamp,
                 link.id,
                 direction.label()
             )?;
         } else if tcp.ack && link.seen_syn && link.seen_syn_ack && !link.established {
             link.established = true;
-            writeln!(
-                self.writer,
-                "[{}] link {} established",
-                event.timestamp, link.id
-            )?;
+            writeln!(self.writer, "[{}] link {} established", timestamp, link.id)?;
         }
 
         if let Some(payload) = payload {
@@ -274,7 +267,7 @@ impl<W: Write> EventSink for LinkEventSink<W> {
             writeln!(
                 self.writer,
                 "[{}] link {} data {} {} total c2s={}B s2c={}B",
-                event.timestamp,
+                timestamp,
                 link.id,
                 direction.label(),
                 format_payload(payload),
@@ -288,7 +281,7 @@ impl<W: Write> EventSink for LinkEventSink<W> {
             writeln!(
                 self.writer,
                 "[{}] link {} reset {} total c2s={}B s2c={}B",
-                event.timestamp,
+                timestamp,
                 link.id,
                 direction.label(),
                 link.client_to_server_bytes,
@@ -299,7 +292,7 @@ impl<W: Write> EventSink for LinkEventSink<W> {
             writeln!(
                 self.writer,
                 "[{}] link {} close fin {}",
-                event.timestamp,
+                timestamp,
                 link.id,
                 direction.label()
             )?;
@@ -309,10 +302,7 @@ impl<W: Write> EventSink for LinkEventSink<W> {
                 writeln!(
                     self.writer,
                     "[{}] link {} closed total c2s={}B s2c={}B",
-                    event.timestamp,
-                    link.id,
-                    link.client_to_server_bytes,
-                    link.server_to_client_bytes
+                    timestamp, link.id, link.client_to_server_bytes, link.server_to_client_bytes
                 )?;
             }
         }
@@ -512,6 +502,36 @@ fn format_payload(payload: &Payload) -> String {
     )
 }
 
+fn format_timestamp_beijing(timestamp_millis: u64) -> String {
+    const BEIJING_OFFSET_SECONDS: u64 = 8 * 60 * 60;
+    const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+
+    let total_seconds = timestamp_millis / 1_000 + BEIJING_OFFSET_SECONDS;
+    let days = total_seconds / SECONDS_PER_DAY;
+    let seconds_of_day = total_seconds % SECONDS_PER_DAY;
+    let (year, month, day) = civil_from_days(days as i64);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} +08:00")
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+
+    (year as i32, month as u32, day as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,7 +557,15 @@ mod tests {
 
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "[1] capture started mode=pcap\n"
+            "[1970-01-01 08:00:00 +08:00] capture started mode=pcap\n"
+        );
+    }
+
+    #[test]
+    fn formats_timestamp_in_beijing_time_to_seconds() {
+        assert_eq!(
+            format_timestamp_beijing(1_778_987_133_703),
+            "2026-05-17 11:05:33 +08:00"
         );
     }
 

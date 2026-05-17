@@ -195,6 +195,10 @@ function isHttp3Frame(kind) {
   return kind.type === "protocol_observation" && kind.analyzer_id === "http3.frame";
 }
 
+function isHttp3DataFrame(kind) {
+  return isHttp3Frame(kind) && kind.metadata?.frame?.frame_type === "DATA";
+}
+
 function isQuicPacket(kind) {
   return kind.type === "protocol_observation" && kind.analyzer_id === "quic.packet";
 }
@@ -352,6 +356,16 @@ function http3PreviewText(kind) {
   const headerText = headers.map((header) => `${header.name}: ${header.value}`).join("\n");
   const dataText = frame.data_preview || "";
   return headerText || dataText || "";
+}
+
+function http3PreviewLabel(kind) {
+  const frame = kind.metadata?.frame || {};
+  const stream = kind.metadata?.stream_id ?? frame.stream_id;
+  const length = frame.data_len ?? frame.length ?? 0;
+  if (frame.frame_type === "DATA") {
+    return `HTTP/3 DATA stream=${stream ?? "?"} ${length}B`;
+  }
+  return `HTTP/3 ${frame.frame_type || "frame"} stream=${stream ?? "?"}`;
 }
 
 function observationProtocols(kind) {
@@ -790,6 +804,11 @@ function updateLinkObservation(flow, kind, protocols, payload) {
   }
 
   if (isHttp3Frame(kind)) {
+    const dataLen = kind.metadata?.frame?.data_len ?? 0;
+    if (dataLen > 0) {
+      state.decryptedEvents += 1;
+      state.decryptedBytes += dataLen;
+    }
     state.phase = "decrypted";
   }
 
@@ -1020,6 +1039,11 @@ function groupDescription(group, items) {
     return `${items.length} observations, ${payloadBytes} plaintext bytes`;
   }
 
+  if (selectedProtocolView?.layer === "L7" && selectedProtocolView.protocol === "HTTP/3") {
+    const dataBytes = items.reduce((total, item) => total + (item.kind.metadata?.frame?.data_len ?? 0), 0);
+    return `${items.length} events, ${dataBytes} data bytes`;
+  }
+
   return `${items.length} events`;
 }
 
@@ -1134,6 +1158,9 @@ function createEventRow(item) {
   if (isHttpsPlaintext(item.kind)) {
     row.classList.add("event-plaintext");
   }
+  if (isHttp3DataFrame(item.kind)) {
+    row.classList.add("event-plaintext");
+  }
   row.querySelector(".event-main").textContent = item.summary.title;
   const tags = row.querySelector(".event-tags");
   for (const badge of item.summary.badges ?? []) {
@@ -1147,6 +1174,13 @@ function createEventRow(item) {
     const plaintext = document.createElement("pre");
     plaintext.className = "event-plaintext-body";
     plaintext.textContent = payloadText(item.payload) || "No plaintext preview";
+    row.append(plaintext);
+  }
+  if (isHttp3DataFrame(item.kind)) {
+    const plaintext = document.createElement("pre");
+    plaintext.className = "event-plaintext-body";
+    const preview = http3PreviewText(item.kind);
+    plaintext.textContent = preview ? `${http3PreviewLabel(item.kind)}\n${preview}` : "No HTTP/3 DATA preview";
     row.append(plaintext);
   }
   return row;

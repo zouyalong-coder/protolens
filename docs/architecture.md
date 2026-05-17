@@ -99,6 +99,8 @@ pub trait ProtocolAnalyzer {
 - `L3 Network` 展示 IP 协议、header 长度、packet 长度和 TTL/hop limit。
 - `L4 Transport` 展示传输协议、源/目标端点、header 长度、segment 长度和 TCP flags。
 - `Payload` 展示原始长度、编码方式、截断状态、UTF-8 preview 和 base64 数据。
+- Protocol observation 也进入 timeline 和事件列表。HTTP/3 DATA observation 应在事件列表中直接渲染独立 preview 块，不只把内容压在一行 summary/detail 里；这样用户筛选 `L7 HTTP/3` 后可以直接看到 JSON body、表单 body 或二进制 hex 预览。
+- HTTP/3 协议过滤视图的 group 描述应统计 DATA bytes；link 聚合状态也应把 HTTP/3 DATA 计入 decrypted bytes，避免用户误以为只解析到了 header。
 - `unsupported_packet` 事件表示 pcap 已收到 raw frame，但当前解析器不支持该链路层或网络/传输协议；UI 用它区分“没抓到包”和“抓到了但没解析”。
 - 各层分区默认折叠，避免详情面板被低频字段占满；用户按需展开查看。
 - Raw Event 属于调试信息，不常驻显示在详情主体，只通过调试入口临时查看。
@@ -236,6 +238,8 @@ protolens cert path
 ```
 
 CLI 应调用 `protolens-core` 暴露的 controller API。不要把业务逻辑写在命令处理器里。
+
+终端展示层只负责格式化，不改变事件模型。默认时间戳展示为北京时间秒级字符串，格式为 `YYYY-MM-DD HH:MM:SS +08:00`；结构化事件内部仍保留 epoch milliseconds。HTTP/3 DATA observation 的 summary 应包含 `preview=`，用于快速确认 body 内容是否已被解密和解析。
 
 推荐选型：
 

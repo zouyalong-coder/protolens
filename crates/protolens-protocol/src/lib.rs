@@ -1443,7 +1443,18 @@ impl QuicStreamState {
                             .unwrap_or_default();
                         format!("HTTP/3 headers stream={stream_id} {header_text}")
                     }
-                    0x00 => format!("HTTP/3 data stream={stream_id} {}B", payload.len()),
+                    0x00 => {
+                        let preview = frame.data_preview.as_deref().unwrap_or_default();
+                        if preview.is_empty() {
+                            format!("HTTP/3 data stream={stream_id} {}B", payload.len())
+                        } else {
+                            format!(
+                                "HTTP/3 data stream={stream_id} {}B preview={}",
+                                payload.len(),
+                                preview.chars().take(160).collect::<String>()
+                            )
+                        }
+                    }
                     _ => format!("HTTP/3 frame stream={stream_id}"),
                 };
 

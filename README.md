@@ -133,7 +133,12 @@ SSLKEYLOGFILE=/tmp/protolens-sslkeys.log open -na "Google Chrome" --args --user-
 - protocol observation 也会展示对应的 L7 分区，例如 `L7 HTTPS`、`L7 HTTP/2`、`L7 QUIC`、`L7 HTTP/3`。
 - 各层分区默认折叠，点击分区标题展开或收起。
 - `Payload` 优先展示可读 plaintext、HTTP/2 frame 摘要、解密后的 QUIC frame 摘要或 HTTP/3 header/data 预览；真实 bytes 仍以 `payload.data` 为准。
+- HTTP/3 DATA observation 会在事件列表中直接显示独立 preview 块，便于看到 JSON body、表单 body 或二进制 body 的 hex 预览；HTTP/3 协议过滤视图会统计 DATA bytes。
 - Raw Event 不在主详情中常驻显示，只通过详情标题右侧的 `Raw` 调试按钮在提示窗中查看。
+
+## CLI 输出
+
+CLI 的 `events` 和 `links` 视图默认使用北京时间秒级时间戳，格式为 `YYYY-MM-DD HH:MM:SS +08:00`。HTTP/3 DATA observation 的 summary 会带 `preview=`，直接展示可读 body 片段或二进制 hex 预览。
 
 ## 开发约定
 
