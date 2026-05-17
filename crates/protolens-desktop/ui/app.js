@@ -10,10 +10,13 @@ const payloadLimitInput = document.querySelector("#payloadLimitInput");
 const countInput = document.querySelector("#countInput");
 const pcapOutputInput = document.querySelector("#pcapOutputInput");
 const pcapLoadInput = document.querySelector("#pcapLoadInput");
+const tlsKeyLogInput = document.querySelector("#tlsKeyLogInput");
 const startButton = document.querySelector("#startButton");
 const stopButton = document.querySelector("#stopButton");
 const savePcapPathButton = document.querySelector("#savePcapPathButton");
 const loadPcapPathButton = document.querySelector("#loadPcapPathButton");
+const tlsKeyLogPathButton = document.querySelector("#tlsKeyLogPathButton");
+const launchChromeButton = document.querySelector("#launchChromeButton");
 const loadPcapButton = document.querySelector("#loadPcapButton");
 const refreshButton = document.querySelector("#refreshButton");
 const clearButton = document.querySelector("#clearButton");
@@ -73,6 +76,8 @@ function setRunning(running) {
   diagnoseTargetButton.disabled = running;
   savePcapPathButton.disabled = running;
   loadPcapPathButton.disabled = running;
+  tlsKeyLogPathButton.disabled = running;
+  launchChromeButton.disabled = running;
   loadPcapButton.disabled = running;
 }
 
@@ -677,6 +682,18 @@ function summarizeEvent(event) {
     };
   }
 
+  if (kind.type === "protocol_observation") {
+    const payload = kind.metadata?.payload;
+    const preview = payload?.preview ? ` preview=${JSON.stringify(payload.preview)}` : "";
+    return {
+      title: kind.summary || kind.analyzer_id || "Protocol observation",
+      detail: payload
+        ? `${kind.analyzer_id || "analyzer"} | ${payloadLabel(payload)}${preview}`
+        : JSON.stringify(kind.metadata ?? {}),
+      badges: [kind.analyzer_id || "Observation", payload ? payloadLabel(payload) : "metadata"],
+    };
+  }
+
   if (kind.type === "error") {
     return { title: "Pipeline error", detail: kind.message };
   }
@@ -867,9 +884,13 @@ function appendEvent(event) {
   if (kind.type === "interface_packet") supportedPacketCount += 1;
   if (kind.type === "unsupported_packet") unsupportedPacketCount += 1;
   const summary = summarizeEvent(event);
-  const flow = kind.type === "interface_packet" ? kind.flow : null;
+  const flow = kind.type === "interface_packet" ? kind.flow : kind.metadata?.flow ?? null;
   const protocols = linkProtocols(kind.packet);
-  const rowLinkKey = flow ? updateLink(flow, kind.tcp, kind.payload, protocols) : "";
+  const observationPayload = kind.type === "protocol_observation" ? kind.metadata?.payload : null;
+  const rowLinkKey =
+    flow && kind.type === "interface_packet"
+      ? updateLink(flow, kind.tcp, kind.payload, protocols)
+      : linkKey(flow);
   capturedEvents.push({
     raw: event,
     kind,
@@ -880,8 +901,8 @@ function appendEvent(event) {
     packet: kind.packet,
     protocols,
     tcp: kind.tcp,
-    payload: kind.payload,
-    tcpPhaseGroup: tcpPhaseGroup(kind.tcp, kind.payload),
+    payload: kind.payload || observationPayload,
+    tcpPhaseGroup: tcpPhaseGroup(kind.tcp, kind.payload || observationPayload),
   });
   scheduleRender({
     links: Boolean(rowLinkKey),
@@ -1296,9 +1317,10 @@ async function startCapture() {
       request: {
         interface: interfaceSelect.value,
         filter: filterInput.value || "tcp or udp port 53",
-        payloadLimit: Number.isFinite(payloadLimit) ? payloadLimit : 4096,
+        payloadLimit: Number.isFinite(payloadLimit) ? payloadLimit : 65535,
         count: Number.isFinite(count) ? count : null,
         pcapOutputPath: pcapOutputInput.value.trim() || null,
+        tlsKeyLogPath: tlsKeyLogInput.value.trim() || null,
       },
     });
     setRunning(true);
@@ -1361,6 +1383,40 @@ async function chooseLoadPcapPath() {
   }
 }
 
+async function chooseTlsKeyLogPath() {
+  try {
+    const path = await invoke("select_tls_key_log_path");
+    if (path) {
+      tlsKeyLogInput.value = path;
+      setStatus(`Using TLS key log ${path}`);
+    }
+  } catch (error) {
+    setStatus(`Failed to choose TLS key log: ${error}`);
+  }
+}
+
+async function launchChromeWithTlsKeyLog() {
+  const confirmed = window.confirm(
+    "Please close any running Chrome windows before launching Chrome from ProtoLens. Continue?",
+  );
+  if (!confirmed) return;
+
+  let path = tlsKeyLogInput.value.trim();
+  try {
+    if (!path) {
+      path = await invoke("select_tls_key_log_path");
+      if (!path) return;
+      tlsKeyLogInput.value = path;
+    }
+    const message = await invoke("launch_chrome_with_tls_key_log", {
+      request: { tlsKeyLogPath: path },
+    });
+    setStatus(message);
+  } catch (error) {
+    setStatus(`Failed to launch Chrome: ${error}`);
+  }
+}
+
 async function loadPcap() {
   const payloadLimit = Number.parseInt(payloadLimitInput.value, 10);
   const path = pcapLoadInput.value.trim();
@@ -1375,7 +1431,8 @@ async function loadPcap() {
     const count = await invoke("load_capture_file", {
       request: {
         path,
-        payloadLimit: Number.isFinite(payloadLimit) ? payloadLimit : 4096,
+        payloadLimit: Number.isFinite(payloadLimit) ? payloadLimit : 65535,
+        tlsKeyLogPath: tlsKeyLogInput.value.trim() || null,
       },
     });
     setStatus(`Loaded ${count} events from ${path}`);
@@ -1394,6 +1451,8 @@ diagnoseTargetButton.addEventListener("click", () => {
 });
 savePcapPathButton.addEventListener("click", chooseSavePcapPath);
 loadPcapPathButton.addEventListener("click", chooseLoadPcapPath);
+tlsKeyLogPathButton.addEventListener("click", chooseTlsKeyLogPath);
+launchChromeButton.addEventListener("click", launchChromeWithTlsKeyLog);
 loadPcapButton.addEventListener("click", loadPcap);
 refreshButton.addEventListener("click", loadInterfaces);
 clearButton.addEventListener("click", clearEvents);

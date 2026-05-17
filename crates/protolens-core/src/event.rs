@@ -52,6 +52,10 @@ pub struct DnsResolution {
 /// TCP segment 元信息。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpSegmentMeta {
+    /// TCP sequence number.
+    pub sequence_number: u32,
+    /// TCP acknowledgment number.
+    pub acknowledgment_number: u32,
     /// FIN flag。
     pub fin: bool,
     /// SYN flag。
@@ -116,8 +120,10 @@ pub struct PacketMeta {
 
 impl TcpSegmentMeta {
     /// 从 TCP header flags byte 创建元信息。
-    pub fn from_flags_byte(flags: u8) -> Self {
+    pub fn from_header(sequence_number: u32, acknowledgment_number: u32, flags: u8) -> Self {
         Self {
+            sequence_number,
+            acknowledgment_number,
             fin: flags & 0x01 != 0,
             syn: flags & 0x02 != 0,
             rst: flags & 0x04 != 0,

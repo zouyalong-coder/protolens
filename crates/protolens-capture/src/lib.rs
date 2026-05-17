@@ -84,7 +84,7 @@ impl Default for PcapSourceConfig {
             immediate_mode: true,
             promiscuous: false,
             read_timeout_ms: 1_000,
-            payload_limit: Some(4_096),
+            payload_limit: Some(65_535),
             output_path: None,
         }
     }
@@ -801,7 +801,11 @@ fn parse_tcp_segment(
     }
 
     let payload = &segment[header_len..];
-    let tcp = TcpSegmentMeta::from_flags_byte(segment[13]);
+    let tcp = TcpSegmentMeta::from_header(
+        u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]),
+        u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]),
+        segment[13],
+    );
 
     Some(ParsedIpPacket {
         flow: FlowKey {

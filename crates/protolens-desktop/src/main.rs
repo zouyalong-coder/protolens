@@ -24,6 +24,7 @@ struct StartCaptureRequest {
     count: Option<usize>,
     payload_limit: usize,
     pcap_output_path: Option<String>,
+    tls_key_log_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +32,13 @@ struct StartCaptureRequest {
 struct LoadCaptureRequest {
     path: String,
     payload_limit: usize,
+    tls_key_log_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchChromeRequest {
+    tls_key_log_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +140,9 @@ fn start_capture(
         request
             .pcap_output_path
             .and_then(|path| (!path.trim().is_empty()).then(|| PathBuf::from(path))),
+        request
+            .tls_key_log_path
+            .and_then(|path| (!path.trim().is_empty()).then(|| PathBuf::from(path))),
     );
     let thread_running = Arc::clone(&running);
 
@@ -195,6 +206,44 @@ async fn select_load_pcap_path(app: AppHandle) -> Result<Option<String>, String>
 }
 
 #[tauri::command]
+async fn select_tls_key_log_path(app: AppHandle) -> Result<Option<String>, String> {
+    let selected = dialog_path_to_string(
+        app.dialog()
+            .file()
+            .add_filter("TLS Key Log", &["log", "txt"])
+            .set_file_name("protolens-sslkeys.log")
+            .set_title("Choose SSLKEYLOGFILE")
+            .blocking_save_file(),
+    )?;
+
+    if let Some(path) = &selected {
+        ensure_file_exists(path)?;
+    }
+
+    Ok(selected)
+}
+
+#[tauri::command]
+fn launch_chrome_with_tls_key_log(request: LaunchChromeRequest) -> Result<String, String> {
+    let key_log_path = request.tls_key_log_path.trim();
+    if key_log_path.is_empty() {
+        return Err("SSL key log file path is required".to_owned());
+    }
+
+    ensure_file_exists(key_log_path)?;
+    let profile_dir = std::env::temp_dir().join("protolens-chrome-keylog-profile");
+    std::fs::create_dir_all(&profile_dir).map_err(|error| {
+        format!(
+            "failed to create Chrome profile directory {}: {error}",
+            profile_dir.display()
+        )
+    })?;
+
+    launch_chrome_process(key_log_path, &profile_dir)?;
+    Ok(format!("Chrome launched with SSLKEYLOGFILE={key_log_path}"))
+}
+
+#[tauri::command]
 fn load_capture_file(app: AppHandle, request: LoadCaptureRequest) -> Result<usize, String> {
     if request.path.trim().is_empty() {
         return Err("pcap file path is required".to_owned());
@@ -203,6 +252,9 @@ fn load_capture_file(app: AppHandle, request: LoadCaptureRequest) -> Result<usiz
     replay_pcap_file(
         PathBuf::from(request.path),
         request.payload_limit,
+        request
+            .tls_key_log_path
+            .and_then(|path| (!path.trim().is_empty()).then(|| PathBuf::from(path))),
         |event| {
             app.emit("capture-event", event)
                 .map_err(|error| protolens_core_error(error.to_string()))?;
@@ -221,6 +273,101 @@ fn dialog_path_to_string(
             .map_err(|error| error.to_string())
     })
     .transpose()
+}
+
+fn ensure_file_exists(path: &str) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create directory {}: {error}", parent.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "failed to create SSL key log file {}: {error}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn launch_chrome_process(key_log_path: &str, profile_dir: &std::path::Path) -> Result<(), String> {
+    Command::new("open")
+        .args([
+            "-na",
+            "Google Chrome",
+            "--args",
+            "--new-window",
+            &format!("--user-data-dir={}", profile_dir.display()),
+        ])
+        .env("SSLKEYLOGFILE", key_log_path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to launch Google Chrome: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn launch_chrome_process(key_log_path: &str, profile_dir: &std::path::Path) -> Result<(), String> {
+    let candidates = [
+        std::env::var("ProgramFiles")
+            .ok()
+            .map(|base| PathBuf::from(base).join("Google\\Chrome\\Application\\chrome.exe")),
+        std::env::var("ProgramFiles(x86)")
+            .ok()
+            .map(|base| PathBuf::from(base).join("Google\\Chrome\\Application\\chrome.exe")),
+        std::env::var("LocalAppData")
+            .ok()
+            .map(|base| PathBuf::from(base).join("Google\\Chrome\\Application\\chrome.exe")),
+    ];
+    let chrome = candidates
+        .into_iter()
+        .flatten()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| PathBuf::from("chrome.exe"));
+
+    Command::new(chrome)
+        .arg("--new-window")
+        .arg(format!("--user-data-dir={}", profile_dir.display()))
+        .env("SSLKEYLOGFILE", key_log_path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to launch Google Chrome: {error}"))
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn launch_chrome_process(key_log_path: &str, profile_dir: &std::path::Path) -> Result<(), String> {
+    let candidates = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+    ];
+    let mut last_error = None;
+    for candidate in candidates {
+        match Command::new(candidate)
+            .arg("--new-window")
+            .arg(format!("--user-data-dir={}", profile_dir.display()))
+            .env("SSLKEYLOGFILE", key_log_path)
+            .spawn()
+        {
+            Ok(_) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(format!(
+        "failed to launch Chrome or Chromium: {}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "not found".to_owned())
+    ))
 }
 
 fn protolens_core_error(message: String) -> protolens_core::Error {
@@ -345,6 +492,8 @@ fn main() {
             stop_capture,
             select_save_pcap_path,
             select_load_pcap_path,
+            select_tls_key_log_path,
+            launch_chrome_with_tls_key_log,
             load_capture_file
         ])
         .run(tauri::generate_context!())

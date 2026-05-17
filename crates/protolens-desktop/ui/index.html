@@ -37,7 +37,7 @@
         <div class="field-grid">
           <label>
             Payload Limit
-            <input id="payloadLimitInput" type="number" min="0" value="4096" />
+            <input id="payloadLimitInput" type="number" min="0" value="65535" />
           </label>
           <label>
             Count
@@ -57,6 +57,20 @@
           </label>
           <button id="savePcapPathButton" class="secondary">Save as...</button>
         </div>
+
+        <div class="tls-keylog-tools">
+          <label>
+            SSL Key Log File
+            <input id="tlsKeyLogInput" placeholder="/tmp/protolens-sslkeys.log" spellcheck="false" />
+          </label>
+          <div class="file-actions">
+            <button id="tlsKeyLogPathButton" class="secondary" type="button">Choose...</button>
+            <button id="launchChromeButton" class="secondary" type="button">Launch Chrome</button>
+          </div>
+        </div>
+        <p class="diagnosis">
+          Choose or create a key log file, then launch Chrome here. ProtoLens starts Chrome with an isolated profile so the SSL key log setting is applied even when another Chrome is already running.
+        </p>
 
         <div class="file-tools">
           <label>

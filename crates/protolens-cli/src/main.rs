@@ -39,7 +39,7 @@ enum Command {
         count: Option<usize>,
 
         /// 单个 packet payload 最多保留的原始字节数。
-        #[arg(long, default_value_t = 4096)]
+        #[arg(long, default_value_t = 65_535)]
         payload_limit: usize,
 
         /// 输出视图：events 为逐事件输出，links 为按 TCP 链路聚合输出。
@@ -55,6 +55,10 @@ enum Command {
         /// 同步保存原始抓包为 pcap 文件，可用 Wireshark 打开。
         #[arg(long)]
         pcap_out: Option<PathBuf>,
+
+        /// NSS SSLKEYLOGFILE 路径；用于后续 TLS session 解密匹配。
+        #[arg(long)]
+        tls_key_log: Option<PathBuf>,
     },
     /// 从 pcap 文件回放事件，用于离线调试。
     Replay {
@@ -62,8 +66,12 @@ enum Command {
         file: PathBuf,
 
         /// 单个 packet payload 最多保留的原始字节数。
-        #[arg(long, default_value_t = 4096)]
+        #[arg(long, default_value_t = 65_535)]
         payload_limit: usize,
+
+        /// NSS SSLKEYLOGFILE 路径；用于回放时匹配 TLS session secrets。
+        #[arg(long)]
+        tls_key_log: Option<PathBuf>,
 
         /// 输出视图：events 为逐事件输出，links 为按 TCP 链路聚合输出。
         #[arg(long, value_enum, default_value = "events")]
@@ -102,8 +110,16 @@ fn main() -> Result<()> {
             view,
             link_filter,
             pcap_out,
+            tls_key_log,
         } => {
-            let config = CaptureRunConfig::pcap(interface, filter, count, payload_limit, pcap_out);
+            let config = CaptureRunConfig::pcap(
+                interface,
+                filter,
+                count,
+                payload_limit,
+                pcap_out,
+                tls_key_log,
+            );
 
             run_capture(config, view, link_filter)?;
         }
@@ -112,8 +128,9 @@ fn main() -> Result<()> {
             payload_limit,
             view,
             link_filter,
+            tls_key_log,
         } => {
-            replay_capture(file, payload_limit, view, link_filter)?;
+            replay_capture(file, payload_limit, tls_key_log, view, link_filter)?;
         }
     }
 
@@ -124,6 +141,7 @@ fn main() -> Result<()> {
 fn replay_capture(
     file: PathBuf,
     payload_limit: usize,
+    tls_key_log: Option<PathBuf>,
     view: CaptureView,
     link_filter: Vec<String>,
 ) -> Result<()> {
@@ -134,11 +152,12 @@ fn replay_capture(
         CaptureView::Links => Box::new(LinkEventSink::new_with_filters(stdout, link_filter)),
     };
 
-    let count = protolens_controller::replay_pcap_file(file, payload_limit, |event| {
-        sink.write(&event)?;
-        sink.flush()?;
-        Ok(())
-    })?;
+    let count =
+        protolens_controller::replay_pcap_file(file, payload_limit, tls_key_log, |event| {
+            sink.write(&event)?;
+            sink.flush()?;
+            Ok(())
+        })?;
 
     eprintln!("[protolens] replay emitted {count} events");
 

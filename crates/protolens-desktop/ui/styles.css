@@ -107,7 +107,8 @@ select:focus {
 .button-row,
 .toolbar,
 .target-tools,
-.file-tools {
+.file-tools,
+.tls-keylog-tools {
   display: grid;
   gap: 0.65rem;
 }
@@ -133,6 +134,34 @@ select:focus {
   align-items: end;
 }
 
+.tls-keylog-tools {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tls-keylog-tools label {
+  min-width: 0;
+}
+
+#tlsKeyLogInput {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.file-actions button {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .target-tools {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
@@ -147,6 +176,11 @@ select:focus {
   color: #bfd9f7;
   font-size: 0.78rem;
   line-height: 1.35;
+}
+
+.diagnosis code {
+  color: #e8f2ff;
+  overflow-wrap: anywhere;
 }
 
 button {

@@ -556,24 +556,14 @@ mod tests {
         let mut output = Vec::new();
         let mut sink = LinkEventSink::new(&mut output);
 
-        sink.write(&packet_event(
-            1,
-            flow(12_345, 80),
-            TcpSegmentMeta::from_flags_byte(0x02),
-            None,
-        ))
-        .unwrap();
-        sink.write(&packet_event(
-            2,
-            flow(80, 12_345),
-            TcpSegmentMeta::from_flags_byte(0x12),
-            None,
-        ))
-        .unwrap();
+        sink.write(&packet_event(1, flow(12_345, 80), tcp_meta(0x02), None))
+            .unwrap();
+        sink.write(&packet_event(2, flow(80, 12_345), tcp_meta(0x12), None))
+            .unwrap();
         sink.write(&packet_event(
             3,
             flow(12_345, 80),
-            TcpSegmentMeta::from_flags_byte(0x18),
+            tcp_meta(0x18),
             Some(Payload::from_bytes(b"GET / HTTP/1.1\r\n", None)),
         ))
         .unwrap();
@@ -592,20 +582,10 @@ mod tests {
         let mut output = Vec::new();
         let mut sink = LinkEventSink::new_with_filters(&mut output, vec![":443".to_owned()]);
 
-        sink.write(&packet_event(
-            1,
-            flow(12_345, 80),
-            TcpSegmentMeta::from_flags_byte(0x02),
-            None,
-        ))
-        .unwrap();
-        sink.write(&packet_event(
-            2,
-            flow(12_345, 443),
-            TcpSegmentMeta::from_flags_byte(0x02),
-            None,
-        ))
-        .unwrap();
+        sink.write(&packet_event(1, flow(12_345, 80), tcp_meta(0x02), None))
+            .unwrap();
+        sink.write(&packet_event(2, flow(12_345, 443), tcp_meta(0x02), None))
+            .unwrap();
 
         let output = String::from_utf8(output).unwrap();
 
@@ -630,13 +610,8 @@ mod tests {
             },
         })
         .unwrap();
-        sink.write(&packet_event(
-            2,
-            flow(12_345, 443),
-            TcpSegmentMeta::from_flags_byte(0x02),
-            None,
-        ))
-        .unwrap();
+        sink.write(&packet_event(2, flow(12_345, 443), tcp_meta(0x02), None))
+            .unwrap();
 
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("dns example.com -> 192.168.0.2 ttl=60s"));
@@ -659,6 +634,10 @@ mod tests {
                 payload,
             },
         }
+    }
+
+    fn tcp_meta(flags: u8) -> TcpSegmentMeta {
+        TcpSegmentMeta::from_header(0, 0, flags)
     }
 
     fn flow(source_port: u16, destination_port: u16) -> FlowKey {
