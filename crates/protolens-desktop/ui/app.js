@@ -8,7 +8,6 @@ const interfaceSelect = document.querySelector("#interfaceSelect");
 const filterInput = document.querySelector("#filterInput");
 const payloadLimitInput = document.querySelector("#payloadLimitInput");
 const countInput = document.querySelector("#countInput");
-const pcapOutputInput = document.querySelector("#pcapOutputInput");
 const pcapLoadInput = document.querySelector("#pcapLoadInput");
 const tlsKeyLogInput = document.querySelector("#tlsKeyLogInput");
 const startButton = document.querySelector("#startButton");
@@ -1319,7 +1318,6 @@ async function startCapture() {
         filter: filterInput.value || "tcp or udp port 53",
         payloadLimit: Number.isFinite(payloadLimit) ? payloadLimit : 65535,
         count: Number.isFinite(count) ? count : null,
-        pcapOutputPath: pcapOutputInput.value.trim() || null,
         tlsKeyLogPath: tlsKeyLogInput.value.trim() || null,
       },
     });
@@ -1347,7 +1345,7 @@ async function startCapture() {
         setTargetDiagnosis(`${targetDiagnosis.textContent} | ${hint}`);
       }
     }, 4000);
-    setStatus(pcapOutputInput.value.trim() ? `Capture running, saving ${pcapOutputInput.value.trim()}` : "Capture running");
+    setStatus("Capture running, recording PCAP to ~/.protolens/capture.pcap");
   } catch (error) {
     setStatus(`Failed to start: ${error}`);
   }
@@ -1361,13 +1359,12 @@ async function stopCapture() {
 
 async function chooseSavePcapPath() {
   try {
-    const path = await invoke("select_save_pcap_path");
+    const path = await invoke("save_current_pcap_as");
     if (path) {
-      pcapOutputInput.value = path;
-      setStatus(`Will save next capture to ${path}`);
+      setStatus(`Saved PCAP to ${path}`);
     }
   } catch (error) {
-    setStatus(`Failed to choose save path: ${error}`);
+    setStatus(`Failed to save PCAP: ${error}`);
   }
 }
 

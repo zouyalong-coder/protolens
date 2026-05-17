@@ -102,6 +102,7 @@ pub trait ProtocolAnalyzer {
 - `unsupported_packet` 事件表示 pcap 已收到 raw frame，但当前解析器不支持该链路层或网络/传输协议；UI 用它区分“没抓到包”和“抓到了但没解析”。
 - 各层分区默认折叠，避免详情面板被低频字段占满；用户按需展开查看。
 - Raw Event 属于调试信息，不常驻显示在详情主体，只通过调试入口临时查看。
+- 桌面端 live capture 默认把原始抓包写入 `~/.protolens/capture.pcap`，每次 Start 前清空该工作文件；`Save captured PCAP...` 再把工作文件移动到用户选择的路径。CLI 仍保留显式 `--pcap-out` 行为。
 
 ## 抓包模式
 

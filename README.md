@@ -111,6 +111,10 @@ SSLKEYLOGFILE=/tmp/protolens-sslkeys.log open -na "Google Chrome" --args --user-
 
 当前 `capture` 可解析常见链路类型上的 IPv4/IPv6 TCP 与 UDP packet；遇到不支持的链路层或网络/传输协议时，会输出 `unsupported_packet` 事件，便于区分“pcap 没收到包”和“收到了但解析器暂不支持”。TLS 解密需要完整 TCP payload，默认 payload limit 已提高到 65535；如果用户手动调小该值，TLS record 被截断时无法解密。
 
+## 桌面端 PCAP 保存
+
+桌面端 live capture 会自动把原始抓包写入 `~/.protolens/capture.pcap`。每次点击 `Start` 时都会先清空这个工作文件，再开始写入本次抓包。用户点击 `Save captured PCAP...` 后选择目标路径，ProtoLens 会把当前工作文件移动到用户指定的位置；跨文件系统无法直接移动时会退化为 copy 后删除工作文件。
+
 ## 桌面端目标诊断
 
 桌面端侧边栏提供 `Target` 输入框，可填写 `https://example.com`、域名、IP 或 `host:port`。点击 `Detect` 或直接 `Start` 时，桌面端会：

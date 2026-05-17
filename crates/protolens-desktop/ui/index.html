@@ -50,13 +50,10 @@
           <button id="stopButton" class="secondary" disabled>Stop</button>
         </div>
 
-        <div class="file-tools">
-          <label>
-            Save PCAP Path
-            <input id="pcapOutputInput" placeholder="Choose a .pcap path" spellcheck="false" />
-          </label>
-          <button id="savePcapPathButton" class="secondary">Save as...</button>
-        </div>
+        <button id="savePcapPathButton" class="ghost" type="button">Save captured PCAP...</button>
+        <p class="diagnosis">
+          Captures are recorded automatically to <code>~/.protolens/capture.pcap</code>. Each new capture clears that working file; Save moves the latest capture to a file you choose.
+        </p>
 
         <div class="tls-keylog-tools">
           <label>

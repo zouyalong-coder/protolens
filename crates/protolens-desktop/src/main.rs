@@ -23,7 +23,6 @@ struct StartCaptureRequest {
     filter: String,
     count: Option<usize>,
     payload_limit: usize,
-    pcap_output_path: Option<String>,
     tls_key_log_path: Option<String>,
 }
 
@@ -132,14 +131,15 @@ fn start_capture(
     *running_slot = Some(Arc::clone(&running));
     drop(running_slot);
 
+    let pcap_work_path = desktop_pcap_work_path()?;
+    reset_desktop_pcap_work_file(&pcap_work_path)?;
+
     let config = CaptureRunConfig::pcap(
         request.interface,
         request.filter,
         request.count,
         request.payload_limit,
-        request
-            .pcap_output_path
-            .and_then(|path| (!path.trim().is_empty()).then(|| PathBuf::from(path))),
+        Some(pcap_work_path),
         request
             .tls_key_log_path
             .and_then(|path| (!path.trim().is_empty()).then(|| PathBuf::from(path))),
@@ -183,15 +183,28 @@ fn stop_capture(state: State<'_, CaptureState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn select_save_pcap_path(app: AppHandle) -> Result<Option<String>, String> {
-    dialog_path_to_string(
+async fn save_current_pcap_as(app: AppHandle) -> Result<Option<String>, String> {
+    let Some(destination) = dialog_path_to_string(
         app.dialog()
             .file()
             .add_filter("Packet Capture", &["pcap"])
             .set_file_name("protolens.pcap")
             .set_title("Save capture as PCAP")
             .blocking_save_file(),
-    )
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let source = desktop_pcap_work_path()?;
+    if !source.exists() {
+        return Err(
+            "No captured PCAP is available yet. Start and stop a capture first.".to_owned(),
+        );
+    }
+
+    move_file(&source, &PathBuf::from(&destination))?;
+    Ok(Some(destination))
 }
 
 #[tauri::command]
@@ -295,6 +308,64 @@ fn ensure_file_exists(path: &str) -> Result<(), String> {
                 path.display()
             )
         })
+}
+
+fn desktop_pcap_work_path() -> Result<PathBuf, String> {
+    let home = home_dir().ok_or_else(|| "failed to locate the user home directory".to_owned())?;
+    Ok(home.join(".protolens").join("capture.pcap"))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+fn reset_desktop_pcap_work_file(path: &std::path::Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create directory {}: {error}", parent.display()))?;
+    }
+
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|error| {
+            format!(
+                "failed to clear previous capture file {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn move_file(source: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
+    if let Some(parent) = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create directory {}: {error}", parent.display()))?;
+    }
+
+    match std::fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(rename_error) => {
+            std::fs::copy(source, destination).map_err(|copy_error| {
+                format!(
+                    "failed to save PCAP to {}: rename failed ({rename_error}); copy failed ({copy_error})",
+                    destination.display()
+                )
+            })?;
+            std::fs::remove_file(source).map_err(|remove_error| {
+                format!(
+                    "saved PCAP to {}, but failed to remove working file {}: {remove_error}",
+                    destination.display(),
+                    source.display()
+                )
+            })
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -490,7 +561,7 @@ fn main() {
             diagnose_target,
             start_capture,
             stop_capture,
-            select_save_pcap_path,
+            save_current_pcap_as,
             select_load_pcap_path,
             select_tls_key_log_path,
             launch_chrome_with_tls_key_log,
